@@ -1,4 +1,5 @@
-"""Research module - web search and pod exec."""
+"""Research module - web search, pod exec, and Context7 docs."""
+import asyncio
 import logging
 import re
 import concurrent.futures
@@ -11,13 +12,114 @@ from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
+# Context7 MCP sidecar URL
+CONTEXT7_SSE_URL = "http://localhost:8088/sse"
+
 
 @dataclass
 class ResearchResult:
     """Combined research results."""
     web_results: List[str]
-    doc_results: List[str]  # Kept for compatibility, but not used
+    doc_results: List[str]
     pod_files: dict  # filename -> content
+
+
+class Context7DocSearcher:
+    """Search library documentation via Context7 MCP sidecar."""
+
+    def __init__(self, sse_url: str = CONTEXT7_SSE_URL):
+        self.sse_url = sse_url
+        self._client = None
+
+    async def _get_client(self):
+        """Lazy-load MCP client session."""
+        if self._client is None:
+            try:
+                from mcp import ClientSession
+                from mcp.client.sse import sse_client
+
+                # Connect to SSE server
+                read, write = await sse_client(self.sse_url).__aenter__()
+                self._client = ClientSession(read, write)
+                await self._client.__aenter__()
+                await self._client.initialize()
+                logger.info("Connected to Context7 MCP sidecar")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Context7 MCP: {e}")
+                self._client = None
+        return self._client
+
+    async def search_docs(self, library_name: str, topic: str = "", max_tokens: int = 5000) -> Optional[str]:
+        """Search documentation for a library."""
+        try:
+            client = await self._get_client()
+            if not client:
+                return None
+
+            # Step 1: Resolve library ID
+            result = await client.call_tool("resolve-library-id", {"libraryName": library_name})
+            if not result or not result.content:
+                logger.debug(f"No library found for: {library_name}")
+                return None
+
+            # Parse the library ID from result
+            library_id = None
+            for content in result.content:
+                if hasattr(content, 'text'):
+                    # Try to extract library ID from response
+                    text = content.text
+                    if '/' in text:
+                        # Look for pattern like /org/repo
+                        match = re.search(r'(/[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)', text)
+                        if match:
+                            library_id = match.group(1)
+                            break
+
+            if not library_id:
+                logger.debug(f"Could not parse library ID for: {library_name}")
+                return None
+
+            logger.info(f"Resolved {library_name} -> {library_id}")
+
+            # Step 2: Get documentation
+            params = {
+                "libraryId": library_id,
+                "tokens": max_tokens
+            }
+            if topic:
+                params["topic"] = topic
+
+            docs_result = await client.call_tool("get-library-docs", params)
+            if not docs_result or not docs_result.content:
+                return None
+
+            # Extract documentation text
+            doc_text = ""
+            for content in docs_result.content:
+                if hasattr(content, 'text'):
+                    doc_text += content.text + "\n"
+
+            if doc_text:
+                logger.info(f"Got {len(doc_text)} chars of docs for {library_name}")
+                return doc_text[:max_tokens]
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Context7 search failed for {library_name}: {e}")
+            return None
+
+    def search_docs_sync(self, library_name: str, topic: str = "") -> Optional[str]:
+        """Synchronous wrapper for search_docs."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(self.search_docs(library_name, topic))
+            loop.close()
+            return result
+        except Exception as e:
+            logger.warning(f"Context7 sync search failed: {e}")
+            return None
 
 
 class WebSearcher:
@@ -135,7 +237,7 @@ class ResearchAgent:
     def __init__(self, context7_api_key: Optional[str] = None):
         self.web_search = WebSearcher()
         self.pod_exec = PodExec()
-        # Note: context7_api_key kept for compatibility but Context7 requires MCP, not REST API
+        self.doc_search = Context7DocSearcher()
 
     def extract_technologies(self, logs: str, traces: str) -> List[str]:
         """Extract technology keywords from logs/traces."""
@@ -191,6 +293,7 @@ class ResearchAgent:
         """Run all research in parallel."""
 
         web_results = []
+        doc_results = []
         pod_files = {}
 
         # Extract what to search for
@@ -199,7 +302,7 @@ class ResearchAgent:
 
         logger.info(f"Research: found {len(errors)} errors, {len(technologies)} techs")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             futures = {}
 
             # Web search for errors (most important)
@@ -216,6 +319,11 @@ class ResearchAgent:
                 future = executor.submit(self._web_search_task, query)
                 futures[future] = ('web', query)
 
+            # Context7 doc search for detected technologies
+            for tech in technologies[:2]:
+                future = executor.submit(self._doc_search_task, tech)
+                futures[future] = ('docs', tech)
+
             # Pod file reads
             common_files = [
                 '/app/package.json',
@@ -227,14 +335,17 @@ class ResearchAgent:
                 futures[future] = ('file', file_path)
 
             # Collect results with timeout
-            for future in concurrent.futures.as_completed(futures, timeout=15):
+            for future in concurrent.futures.as_completed(futures, timeout=20):
                 task_type, task_id = futures[future]
                 try:
-                    result = future.result(timeout=5)
+                    result = future.result(timeout=10)
                     if result:
                         if task_type == 'web' and result.get('data'):
                             web_results.extend(result.get('data', []))
                             logger.info(f"Web search returned {len(result.get('data', []))} results")
+                        elif task_type == 'docs' and result.get('data'):
+                            doc_results.append(result.get('data'))
+                            logger.info(f"Context7 returned docs for {task_id}")
                         elif task_type == 'file' and result.get('data'):
                             pod_files[result.get('path')] = result.get('data')
                             logger.info(f"Read pod file: {result.get('path')}")
@@ -243,17 +354,24 @@ class ResearchAgent:
                 except Exception as e:
                     logger.warning(f"Research task failed ({task_type}): {e}")
 
-        logger.info(f"Research complete: {len(web_results)} web results, {len(pod_files)} pod files")
+        logger.info(f"Research complete: {len(web_results)} web, {len(doc_results)} docs, {len(pod_files)} files")
 
         return ResearchResult(
             web_results=web_results[:5],
-            doc_results=[],  # Context7 requires MCP, not available here
+            doc_results=doc_results[:3],
             pod_files=pod_files
         )
 
     def _web_search_task(self, query: str) -> dict:
         results = self.web_search.search(query, max_results=3)
         return {'type': 'web', 'data': results}
+
+    def _doc_search_task(self, library_name: str) -> dict:
+        """Search Context7 for library documentation."""
+        docs = self.doc_search.search_docs_sync(library_name, topic="error handling troubleshooting")
+        if docs:
+            return {'type': 'docs', 'data': docs}
+        return {}
 
     def _pod_read_task(self, namespace: str, pod_name: str, file_path: str) -> dict:
         content = self.pod_exec.read_file(namespace, pod_name, file_path)
