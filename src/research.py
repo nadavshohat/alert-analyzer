@@ -32,18 +32,25 @@ class Context7DocSearcher:
         self._client = None
 
     async def _get_client(self):
-        """Lazy-load MCP client session."""
+        """Lazy-load MCP client session with timeout."""
         if self._client is None:
             try:
                 from mcp import ClientSession
                 from mcp.client.sse import sse_client
 
-                # Connect to SSE server
-                read, write = await sse_client(self.sse_url).__aenter__()
-                self._client = ClientSession(read, write)
-                await self._client.__aenter__()
-                await self._client.initialize()
+                # Connect with 5 second timeout
+                async def connect():
+                    read, write = await sse_client(self.sse_url).__aenter__()
+                    session = ClientSession(read, write)
+                    await session.__aenter__()
+                    await session.initialize()
+                    return session
+
+                self._client = await asyncio.wait_for(connect(), timeout=5.0)
                 logger.info("Connected to Context7 MCP sidecar")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout connecting to Context7 MCP sidecar")
+                self._client = None
             except Exception as e:
                 logger.warning(f"Failed to connect to Context7 MCP: {e}")
                 self._client = None
@@ -110,13 +117,21 @@ class Context7DocSearcher:
             return None
 
     def search_docs_sync(self, library_name: str, topic: str = "") -> Optional[str]:
-        """Synchronous wrapper for search_docs."""
+        """Synchronous wrapper for search_docs with timeout."""
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.search_docs(library_name, topic))
+            # 10 second total timeout for the entire operation
+            coro = asyncio.wait_for(self.search_docs(library_name, topic), timeout=10.0)
+            result = loop.run_until_complete(coro)
             loop.close()
             return result
+        except asyncio.TimeoutError:
+            logger.warning(f"Context7 search timed out for: {library_name}")
+            return None
+        except asyncio.CancelledError:
+            logger.warning(f"Context7 search cancelled for: {library_name}")
+            return None
         except Exception as e:
             logger.warning(f"Context7 sync search failed: {e}")
             return None
