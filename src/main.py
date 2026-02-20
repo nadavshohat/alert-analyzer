@@ -8,9 +8,8 @@ from typing import Dict
 
 from config import config
 from clickhouse import ClickhouseClient, CrashEvent
-from analyzer import BedrockAnalyzer
+from agent import AgentAnalyzer
 from notifier import SlackNotifier
-from research import ResearchAgent
 
 # Configure logging
 logging.basicConfig(
@@ -26,9 +25,8 @@ class AlertAnalyzer:
 
     def __init__(self):
         self.clickhouse = ClickhouseClient()
-        self.analyzer = BedrockAnalyzer()
+        self.agent = AgentAnalyzer()
         self.notifier = SlackNotifier()
-        self.research = ResearchAgent(context7_api_key=config.context7_api_key)
         self.running = True
         self.seen_events: Dict[str, datetime] = {}  # key -> last_seen timestamp
 
@@ -65,34 +63,9 @@ class AlertAnalyzer:
         """Process a single crash event."""
         logger.info(f"Processing crash event: {event.namespace}/{event.workload} - {event.reason}")
 
-        # Fetch logs for the workload
-        logs = self.clickhouse.get_logs_for_workload(event.namespace, event.workload)
-
-        # If no workload logs, try pod-specific logs
-        if not logs:
-            logs = self.clickhouse.get_logs_for_pod(event.namespace, event.pod_name)
-
-        # Fetch slow traces for latency analysis
-        traces = self.clickhouse.get_slow_traces(event.namespace, event.workload)
-
-        # Format logs/traces for research extraction
-        logs_text = "\n".join([log.content for log in logs[:50]])
-        traces_text = "\n".join([t.span_name for t in traces[:20]])
-
-        # Run research: web search, pod exec (in parallel)
-        logger.info(f"Running research for {event.namespace}/{event.workload}...")
-        research_result = self.research.research(
-            namespace=event.namespace,
-            pod_name=event.pod_name,
-            workload=event.workload,
-            logs_text=logs_text,
-            traces_text=traces_text
-        )
-        logger.info(f"Research complete: {len(research_result.web_results)} web, {len(research_result.pod_files)} files")
-
-        # Analyze with Bedrock (now includes traces + research)
-        analysis = self.analyzer.analyze(event, logs, traces, research_result)
-        logger.info(f"Analysis complete: {analysis.summary[:100]}...")
+        # Agent investigates autonomously using tools
+        analysis = self.agent.analyze(event)
+        logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
 
         # Send to Slack
         success = self.notifier.send(event, analysis)

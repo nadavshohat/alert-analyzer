@@ -67,27 +67,4 @@ spec:
               cpu: "100m"
             limits:
               memory: "512Mi"
-        # Context7 MCP sidecar for documentation lookup
-        - name: context7-mcp
-          image: python:3.11-slim
-          command:
-            - /bin/sh
-            - -c
-            - |
-              pip install --quiet context7-mcp-python &&
-              context7-mcp-python --transport sse --host 0.0.0.0 --port 8088
-          ports:
-            - containerPort: 8088
-              name: mcp-sse
-          resources:
-            requests:
-              memory: "128Mi"
-              cpu: "50m"
-            limits:
-              memory: "256Mi"
-          readinessProbe:
-            tcpSocket:
-              port: 8088
-            initialDelaySeconds: 30
-            periodSeconds: 10
       restartPolicy: Always

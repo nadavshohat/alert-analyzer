@@ -6,7 +6,7 @@ import requests
 
 from config import config
 from clickhouse import CrashEvent
-from analyzer import Analysis
+from agent import Analysis
 
 logger = logging.getLogger(__name__)
 
