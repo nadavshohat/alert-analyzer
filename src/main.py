@@ -4,7 +4,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, Optional
 
 from config import config
 from clickhouse import ClickhouseClient, CrashEvent
@@ -29,6 +29,7 @@ class AlertAnalyzer:
         self.notifier = SlackNotifier()
         self.running = True
         self.seen_events: Dict[str, datetime] = {}  # key -> last_seen timestamp
+        self.last_poll_time: Optional[datetime] = None
 
     def _is_duplicate(self, event: CrashEvent) -> bool:
         """Check if we've already processed this event recently."""
@@ -77,7 +78,9 @@ class AlertAnalyzer:
     def poll(self):
         """Poll for new crash events and process them."""
         try:
-            events = self.clickhouse.get_crash_events()
+            poll_start = datetime.now()
+            events = self.clickhouse.get_crash_events(since_timestamp=self.last_poll_time)
+            self.last_poll_time = poll_start
 
             for event in events:
                 if not self._is_duplicate(event):

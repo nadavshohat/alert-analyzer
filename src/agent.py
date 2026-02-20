@@ -2,6 +2,8 @@
 import json
 import logging
 import re
+import shlex
+import time
 from dataclasses import dataclass
 from typing import List
 
@@ -13,12 +15,18 @@ from clickhouse import ClickhouseClient, CrashEvent, LogEntry, TraceEntry
 
 logger = logging.getLogger(__name__)
 
-# Commands that are never allowed in pod exec
-BLOCKED_COMMANDS = frozenset([
-    'rm', 'kill', 'dd', 'mkfs', 'shutdown', 'reboot', 'halt',
-    'poweroff', 'mv', 'chmod', 'chown', 'curl', 'wget', 'nc',
-    'ncat', 'python', 'node', 'bash', 'sh', 'exec',
+# Only these commands are allowed in pod exec
+ALLOWED_COMMANDS = frozenset([
+    'cat', 'head', 'tail', 'less', 'ls', 'dir', 'stat', 'file', 'wc',
+    'grep', 'awk', 'sed', 'sort', 'uniq', 'cut', 'tr',
+    'printenv', 'env', 'echo',
+    'ps', 'top', 'df', 'du', 'free', 'uptime', 'whoami', 'id', 'hostname', 'uname',
+    'find', 'which', 'readlink', 'realpath', 'basename', 'dirname',
+    'date', 'mount', 'lsof', 'ss', 'ip', 'ifconfig', 'netstat',
 ])
+
+# Shell metacharacters that could be used to chain/inject commands
+SHELL_METACHARACTERS = frozenset(['|', ';', '&&', '||', '`', '$(', '>', '<', '&'])
 
 # Env var keys to filter from printenv output
 SECRET_KEYWORDS = frozenset([
@@ -328,9 +336,9 @@ class AgentAnalyzer:
         logs: List[LogEntry] = []
 
         if workload:
-            logs = self.clickhouse.get_logs_for_workload(namespace, workload)
+            logs = self.clickhouse.get_logs_for_workload(namespace, workload, minutes)
         if not logs and pod_name:
-            logs = self.clickhouse.get_logs_for_pod(namespace, pod_name)
+            logs = self.clickhouse.get_logs_for_pod(namespace, pod_name, minutes)
 
         if not logs:
             return "No logs found for this workload/pod in the last {} minutes.".format(minutes)
@@ -363,22 +371,17 @@ class AgentAnalyzer:
 
         return f"Found {len(traces)} traces (slowest first):\n" + "\n".join(lines)
 
-    def _find_running_pod(self, namespace: str, pod_name: str) -> str:
+    def _find_running_pod(self, namespace: str, pod_name: str, workload: str = "") -> str:
         """Find a running pod for the same workload. Falls back to original pod_name."""
         if not self.k8s_api:
             return pod_name
         try:
-            # Extract workload name from pod name (remove replicaset hash and pod hash)
-            # e.g. "leaky-service-645b96f484-f22dv" -> "leaky-service"
-            parts = pod_name.rsplit('-', 2)
-            if len(parts) >= 3:
-                workload = parts[0]
-            else:
-                workload = pod_name.rsplit('-', 1)[0]
+            # Use workload prefix to find sibling pods
+            prefix = workload if workload else pod_name.rsplit('-', 1)[0]
 
             pods = self.k8s_api.list_namespaced_pod(namespace)
             for pod in pods.items:
-                if (pod.metadata.name.startswith(workload)
+                if (pod.metadata.name.startswith(prefix + '-')
                         and pod.status.phase == 'Running'
                         and pod.status.container_statuses
                         and pod.status.container_statuses[0].ready):
@@ -390,21 +393,34 @@ class AgentAnalyzer:
 
     def _tool_exec_in_pod(self, params: dict) -> str:
         """Execute a command in a pod, with retry if container is restarting."""
-        import time
         namespace = params["namespace"]
         pod_name = params["pod_name"]
         command_str = params["command"]
 
-        # Security: block dangerous commands
-        first_word = command_str.strip().split()[0] if command_str.strip() else ""
-        if first_word in BLOCKED_COMMANDS:
-            return f"Command '{first_word}' is not allowed. Only read-only commands are permitted."
+        # Security: block shell metacharacters that could chain commands
+        for meta in SHELL_METACHARACTERS:
+            if meta in command_str:
+                return f"Command contains disallowed character '{meta}'. Only simple read-only commands are permitted."
+
+        # Security: only allow known safe commands
+        try:
+            parsed = shlex.split(command_str)
+        except ValueError as e:
+            return f"Could not parse command: {e}"
+
+        if not parsed:
+            return "Empty command."
+
+        # Resolve the base command name (strip path prefix like /bin/ or /usr/bin/)
+        base_cmd = parsed[0].rsplit('/', 1)[-1]
+        if base_cmd not in ALLOWED_COMMANDS:
+            return f"Command '{base_cmd}' is not allowed. Allowed commands: {', '.join(sorted(ALLOWED_COMMANDS))}"
 
         if not self.k8s_api:
             return "Kubernetes API not available - cannot exec into pod."
 
         from kubernetes.stream import stream
-        exec_command = command_str.split()
+        exec_command = parsed
 
         max_retries = 3
         for attempt in range(max_retries):

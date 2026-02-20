@@ -32,10 +32,12 @@ resource "aws_iam_role_policy" "bedrock" {
       {
         Effect = "Allow"
         Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "bedrock:InvokeModel"
         ]
-        Resource = "arn:aws:bedrock:*:*:model/*"
+        Resource = [
+          "arn:aws:bedrock:${var.bedrock_region}::foundation-model/${var.bedrock_model}",
+          "arn:aws:bedrock:${var.bedrock_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model}"
+        ]
       }
     ]
   })
