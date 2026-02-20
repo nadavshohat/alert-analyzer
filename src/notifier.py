@@ -59,13 +59,13 @@ class SlackNotifier:
   _Pod:_ `{event.pod_name}`
   _Message:_ {event.message[:200]}
 
-*Root Cause*
+*Root Cause* _{analysis.confidence} confidence_
 > {analysis.root_cause}
 
 *Recommended Action*
 {recommendation}
 
-_Last seen:_ {timestamp_str} | <{gc_link}|View in Groundcover>"""
+_Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool calls_ | <{gc_link}|View in Groundcover>"""
 
         payload = {
             "text": f"{emoji} {event.reason}: {event.workload} in {event.namespace}",

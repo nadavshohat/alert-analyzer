@@ -29,20 +29,25 @@ SYSTEM_PROMPT = """You are a Kubernetes incident responder investigating a pod c
 
 You have tools to investigate. Use them strategically:
 1. ALWAYS start by fetching logs (get_logs with the workload name)
-2. If logs show specific errors, search the web for solutions
-3. If you need more context (config files, dependencies, env vars), exec into the pod
+2. If you need more context, exec into the pod to read source code, config files, or environment variables
+3. If logs show specific errors you don't recognize, search the web
 4. If the issue might be latency-related (health check timeouts, slow responses), check traces
 
-Be efficient - use the minimum number of tool calls needed. Don't search the web for obvious issues you can diagnose from logs alone.
+Important investigation guidelines:
+- Be efficient - use the minimum number of tool calls needed
+- For OOMKilled: this could be a code issue (memory leak) OR the memory limit is simply too low for the workload. Check BOTH possibilities. Try to exec and read the source code to verify.
+- If exec fails (pod restarting), retry once - there may be a brief window when the container is up
+- Be TRANSPARENT: if you could not exec into the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
 
 CRITICAL: Your final message MUST use ONLY this format with NO other text before or after:
 
 SUMMARY: <one sentence, max 15 words>
 ROOT_CAUSE: <1-2 sentences explaining WHY this happened>
+CONFIDENCE: <high/medium/low - based on what you were able to verify>
 RECOMMENDATIONS:
 - <actionable fix>
 
-Do NOT add any commentary, explanation, or thinking outside this format. Just the three fields."""
+Do NOT add any commentary, explanation, or thinking outside this format. Just the four fields."""
 
 TOOL_DEFINITIONS = [
     {
@@ -100,7 +105,7 @@ TOOL_DEFINITIONS = [
     {
         "toolSpec": {
             "name": "exec_in_pod",
-            "description": "Execute a read-only command inside the pod. Use to inspect files, check config, list directories, or view environment variables. Examples: 'cat /app/package.json', 'ls -la /app', 'printenv'. Secrets are filtered from env output. The pod may be restarting so this can fail.",
+            "description": "Execute a read-only command inside a running pod. Use to inspect files, check config, list directories, or view environment variables. Secrets are filtered from printenv output. The pod may be restarting so this can fail.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -152,6 +157,7 @@ class Analysis:
     recommendations: List[str]
     raw_response: str
     tool_calls_made: int = 0
+    confidence: str = "medium"
 
 
 class AgentAnalyzer:
@@ -357,8 +363,34 @@ class AgentAnalyzer:
 
         return f"Found {len(traces)} traces (slowest first):\n" + "\n".join(lines)
 
+    def _find_running_pod(self, namespace: str, pod_name: str) -> str:
+        """Find a running pod for the same workload. Falls back to original pod_name."""
+        if not self.k8s_api:
+            return pod_name
+        try:
+            # Extract workload name from pod name (remove replicaset hash and pod hash)
+            # e.g. "leaky-service-645b96f484-f22dv" -> "leaky-service"
+            parts = pod_name.rsplit('-', 2)
+            if len(parts) >= 3:
+                workload = parts[0]
+            else:
+                workload = pod_name.rsplit('-', 1)[0]
+
+            pods = self.k8s_api.list_namespaced_pod(namespace)
+            for pod in pods.items:
+                if (pod.metadata.name.startswith(workload)
+                        and pod.status.phase == 'Running'
+                        and pod.status.container_statuses
+                        and pod.status.container_statuses[0].ready):
+                    logger.info(f"Resolved running pod: {pod.metadata.name} (original: {pod_name})")
+                    return pod.metadata.name
+        except Exception as e:
+            logger.debug(f"Failed to resolve running pod: {e}")
+        return pod_name
+
     def _tool_exec_in_pod(self, params: dict) -> str:
-        """Execute a command in a pod."""
+        """Execute a command in a pod, with retry if container is restarting."""
+        import time
         namespace = params["namespace"]
         pod_name = params["pod_name"]
         command_str = params["command"]
@@ -371,42 +403,59 @@ class AgentAnalyzer:
         if not self.k8s_api:
             return "Kubernetes API not available - cannot exec into pod."
 
-        try:
-            from kubernetes.stream import stream
+        from kubernetes.stream import stream
+        exec_command = command_str.split()
 
-            # Parse command
-            exec_command = command_str.split()
+        max_retries = 3
+        for attempt in range(max_retries):
+            # On first failure, try resolving a fresh running pod
+            target_pod = pod_name if attempt == 0 else self._find_running_pod(namespace, pod_name)
 
-            resp = stream(
-                self.k8s_api.connect_get_namespaced_pod_exec,
-                name=pod_name,
-                namespace=namespace,
-                command=exec_command,
-                stderr=True,
-                stdin=False,
-                stdout=True,
-                tty=False,
-            )
+            try:
+                resp = stream(
+                    self.k8s_api.connect_get_namespaced_pod_exec,
+                    name=target_pod,
+                    namespace=namespace,
+                    command=exec_command,
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
 
-            if not resp:
-                return "Command returned empty output."
+                if not resp:
+                    return "Command returned empty output."
 
-            # Filter secrets from env output
-            if first_word in ('printenv', 'env'):
-                lines = []
-                for line in resp.split('\n'):
-                    key = line.split('=')[0] if '=' in line else ''
-                    if not any(s in key.upper() for s in SECRET_KEYWORDS):
-                        lines.append(line)
-                return '\n'.join(lines)
+                # Filter secrets from env output
+                if first_word in ('printenv', 'env'):
+                    lines = []
+                    for line in resp.split('\n'):
+                        key = line.split('=')[0] if '=' in line else ''
+                        if not any(s in key.upper() for s in SECRET_KEYWORDS):
+                            lines.append(line)
+                    return '\n'.join(lines)
 
-            return resp
+                return resp
 
-        except Exception as e:
-            error_msg = str(e)
-            if 'container not found' in error_msg.lower() or 'not running' in error_msg.lower():
-                return "Pod container is not running (likely in CrashLoopBackOff restart cycle). Cannot exec."
-            return f"Exec failed: {error_msg}"
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_not_running = ('container not found' in error_msg
+                                  or 'not running' in error_msg
+                                  or 'not found' in error_msg
+                                  or '403' in error_msg
+                                  or 'handshake' in error_msg)
+
+                if is_not_running and attempt < max_retries - 1:
+                    wait = 5 * (attempt + 1)
+                    logger.info(f"Exec attempt {attempt + 1} on {target_pod} failed, retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+
+                if is_not_running:
+                    return "Pod container is not running after multiple retries (CrashLoopBackOff). Could not exec into pod to inspect files or memory."
+                return f"Exec failed: {e}"
+
+        return "Exec failed after retries."
 
     def _tool_search_web(self, params: dict) -> str:
         """Search the web using DuckDuckGo."""
@@ -442,6 +491,7 @@ class AgentAnalyzer:
         """Parse the structured SUMMARY/ROOT_CAUSE/RECOMMENDATIONS response."""
         summary = ""
         root_cause = ""
+        confidence = "medium"
         recommendations = []
 
         lines = response.strip().split('\n')
@@ -456,16 +506,20 @@ class AgentAnalyzer:
                 colon_idx = line.index(':')
                 root_cause = line[colon_idx + 1:].strip()
                 current_section = 'root_cause'
+            elif line.upper().startswith('CONFIDENCE:'):
+                val = line[11:].strip().lower()
+                if val in ('high', 'medium', 'low'):
+                    confidence = val
+                current_section = 'confidence'
             elif line.upper().startswith('RECOMMENDATION'):
                 current_section = 'recommendations'
             elif current_section == 'recommendations' and line.startswith('-'):
                 recommendations.append(line[1:].strip())
-            elif current_section == 'root_cause' and line and not line.upper().startswith('RECOMMENDATION'):
+            elif current_section == 'root_cause' and line and not line.upper().startswith(('RECOMMENDATION', 'CONFIDENCE')):
                 root_cause += ' ' + line if root_cause else line
 
         # Fallback: if Claude didn't follow format, use the raw text intelligently
         if not summary and not root_cause:
-            # Take first meaningful sentence as summary, rest as root cause
             sentences = [s.strip() for s in response.replace('\n', ' ').split('.') if s.strip()]
             if sentences:
                 summary = sentences[0][:200]
@@ -478,5 +532,6 @@ class AgentAnalyzer:
             summary=summary or response[:200],
             root_cause=root_cause or summary or response[:200],
             recommendations=recommendations or ["Review logs manually"],
-            raw_response=response
+            raw_response=response,
+            confidence=confidence
         )
