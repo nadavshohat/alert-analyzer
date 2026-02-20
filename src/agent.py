@@ -35,13 +35,14 @@ You have tools to investigate. Use them strategically:
 
 Be efficient - use the minimum number of tool calls needed. Don't search the web for obvious issues you can diagnose from logs alone.
 
-After investigation, provide your final analysis in EXACTLY this format:
+CRITICAL: Your final message MUST use ONLY this format with NO other text before or after:
+
 SUMMARY: <one sentence, max 15 words>
 ROOT_CAUSE: <1-2 sentences explaining WHY this happened>
 RECOMMENDATIONS:
-- <single most important actionable fix>
+- <actionable fix>
 
-Be concise. No filler. Just the diagnosis."""
+Do NOT add any commentary, explanation, or thinking outside this format. Just the three fields."""
 
 TOOL_DEFINITIONS = [
     {
@@ -447,25 +448,34 @@ class AgentAnalyzer:
 
         for line in lines:
             line = line.strip()
-            if line.startswith('SUMMARY:'):
+            if line.upper().startswith('SUMMARY:'):
                 summary = line[8:].strip()
                 current_section = 'summary'
-            elif line.startswith('ROOT_CAUSE:'):
-                root_cause = line[11:].strip()
+            elif line.upper().startswith('ROOT_CAUSE:') or line.upper().startswith('ROOT CAUSE:'):
+                colon_idx = line.index(':')
+                root_cause = line[colon_idx + 1:].strip()
                 current_section = 'root_cause'
-            elif line.startswith('RECOMMENDATIONS:'):
+            elif line.upper().startswith('RECOMMENDATION'):
                 current_section = 'recommendations'
             elif current_section == 'recommendations' and line.startswith('-'):
                 recommendations.append(line[1:].strip())
-            elif current_section == 'root_cause' and line and not root_cause:
-                root_cause = line
+            elif current_section == 'root_cause' and line and not line.upper().startswith('RECOMMENDATION'):
+                root_cause += ' ' + line if root_cause else line
 
-        if not summary:
-            summary = response[:200]
+        # Fallback: if Claude didn't follow format, use the raw text intelligently
+        if not summary and not root_cause:
+            # Take first meaningful sentence as summary, rest as root cause
+            sentences = [s.strip() for s in response.replace('\n', ' ').split('.') if s.strip()]
+            if sentences:
+                summary = sentences[0][:200]
+                if len(sentences) > 1:
+                    root_cause = '. '.join(sentences[1:3])
+        elif not summary:
+            summary = root_cause[:200] if root_cause else response[:200]
 
         return Analysis(
-            summary=summary,
-            root_cause=root_cause or "See raw analysis",
+            summary=summary or response[:200],
+            root_cause=root_cause or summary or response[:200],
             recommendations=recommendations or ["Review logs manually"],
             raw_response=response
         )
