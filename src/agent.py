@@ -254,6 +254,7 @@ class AgentAnalyzer:
 
                         try:
                             result = self._execute_tool(tool_name, tool_input)
+                            logger.info(f"Tool result #{tool_calls_made} ({tool_name}): {result[:300]}")
                             # Truncate large results
                             if len(result) > 8000:
                                 result = result[:8000] + "\n... (truncated)"
