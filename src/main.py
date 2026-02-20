@@ -2,7 +2,7 @@
 import logging
 import signal
 import sys
-import time
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -27,9 +27,9 @@ class AlertAnalyzer:
         self.clickhouse = ClickhouseClient()
         self.agent = AgentAnalyzer()
         self.notifier = SlackNotifier()
-        self.running = True
         self.seen_events: Dict[str, datetime] = {}  # key -> last_seen timestamp
         self.last_poll_time: Optional[datetime] = None
+        self._shutdown = threading.Event()
 
     def _is_duplicate(self, event: CrashEvent) -> bool:
         """Check if we've already processed this event recently."""
@@ -100,14 +100,14 @@ class AlertAnalyzer:
         logger.info(f"Monitoring events: {config.event_reasons}")
         logger.info(f"Excluding namespaces: {config.exclude_namespaces}")
 
-        while self.running:
+        while not self._shutdown.is_set():
             self.poll()
-            time.sleep(config.poll_interval_seconds)
+            self._shutdown.wait(timeout=config.poll_interval_seconds)
 
     def stop(self):
         """Stop the analyzer gracefully."""
         logger.info("Shutting down Alert Analyzer...")
-        self.running = False
+        self._shutdown.set()
 
 
 def main():
