@@ -306,11 +306,12 @@ class AgentAnalyzer:
         # Max turns reached
         logger.warning(f"Agent hit max turns ({config.max_agent_turns})")
         return Analysis(
-            summary="Investigation reached max turns without conclusion",
-            root_cause="Insufficient data or complex issue requiring manual review",
-            recommendations=["Review logs and traces manually"],
-            raw_response="Max agent turns reached",
-            tool_calls_made=tool_calls_made
+            summary="Investigation inconclusive — could not determine root cause",
+            root_cause="Complex issue requiring manual review. The automated investigation gathered data but could not reach a definitive conclusion.",
+            recommendations=["Review logs and traces manually in Groundcover"],
+            raw_response="Investigation inconclusive",
+            tool_calls_made=tool_calls_made,
+            confidence="low"
         )
 
     def _execute_tool(self, name: str, tool_input: dict) -> str:
