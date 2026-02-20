@@ -57,7 +57,7 @@ class SlackNotifier:
 \u2022 *Event:* `{event.reason}`
   _Namespace:_ {event.namespace}
   _Pod:_ `{event.pod_name}`
-  _Message:_ {event.message[:200]}
+  _Message:_ {self._clean_message(event.message)}
 
 *Root Cause* _({analysis.confidence} confidence)_
 > {analysis.root_cause}
@@ -98,6 +98,14 @@ _Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool c
         except requests.RequestException as e:
             logger.error(f"Failed to send Slack notification: {e}")
             return False
+
+    @staticmethod
+    def _clean_message(message: str) -> str:
+        """Strip Kubernetes pod UIDs and noise from event messages."""
+        import re
+        # Remove _namespace(uuid) pattern e.g. _staging(5c7c10d3-...)
+        cleaned = re.sub(r'_\S+\([0-9a-f-]{36}\)', '', message)
+        return cleaned[:200]
 
     def _build_groundcover_link(self, event: CrashEvent) -> str:
         """Build a deep link to the workload in Groundcover UI."""
