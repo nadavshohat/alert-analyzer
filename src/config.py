@@ -31,7 +31,8 @@ class Config:
     bedrock_model: str = field(default_factory=lambda: os.environ.get(
         'BEDROCK_MODEL', 'anthropic.claude-sonnet-4-20250514-v1:0'
     ))
-    bedrock_max_tokens: int = field(default_factory=lambda: int(os.environ.get('BEDROCK_MAX_TOKENS', '1024')))
+    bedrock_max_tokens: int = field(default_factory=lambda: int(os.environ.get('BEDROCK_MAX_TOKENS', '2048')))
+    max_agent_turns: int = field(default_factory=lambda: int(os.environ.get('MAX_AGENT_TURNS', '10')))
 
     # Slack
     slack_webhook_url: str = field(default_factory=lambda: os.environ.get('SLACK_WEBHOOK_URL', ''))
@@ -47,8 +48,6 @@ class Config:
     # Cluster info
     cluster_name: str = field(default_factory=lambda: os.environ.get('CLUSTER_NAME', 'ensights-prod-cluster'))
 
-    # Research (optional)
-    context7_api_key: str = field(default_factory=lambda: os.environ.get('CONTEXT7_API_KEY', ''))
 
 
 config = Config()

@@ -13,10 +13,11 @@ data:
   DEDUP_WINDOW_SECONDS: "1800"
   LOG_LOOKBACK_MINUTES: "30"
   EXCLUDE_NAMESPACES: "kube-system,groundcover"
-  EVENT_REASONS: "CrashLoopBackOff,OOMKilled,BackOff,Failed,Error"
+  EVENT_REASONS: "CrashLoopBackOff,OOMKilled,BackOff,Failed,Error,Unhealthy"
   BEDROCK_REGION: "us-west-2"
   BEDROCK_MODEL: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-  BEDROCK_MAX_TOKENS: "1024"
+  BEDROCK_MAX_TOKENS: "2048"
+  MAX_AGENT_TURNS: "10"
   GROUNDCOVER_BASE_URL: "https://app.groundcover.com"
   GROUNDCOVER_TENANT_UUID: "3a5edc8c-5cf8-44e6-9c01-270233ab11e4"
   CLUSTER_NAME: "ensights-prod-cluster"
@@ -30,4 +31,3 @@ type: Opaque
 stringData:
   CLICKHOUSE_PASSWORD: "<your-clickhouse-password>"
   SLACK_WEBHOOK_URL: "<your-slack-webhook-url>"
-  CONTEXT7_API_KEY: "<your-context7-api-key>"
