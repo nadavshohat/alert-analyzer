@@ -174,7 +174,7 @@ class AgentAnalyzer:
     def __init__(self):
         boto_config = BotoConfig(
             region_name=config.bedrock_region,
-            retries={'max_attempts': 3, 'mode': 'adaptive'}
+            retries={'max_attempts': 10, 'mode': 'adaptive'}
         )
         self.bedrock = boto3.client('bedrock-runtime', config=boto_config)
         self.clickhouse = ClickhouseClient()
@@ -443,7 +443,7 @@ class AgentAnalyzer:
                     return "Command returned empty output."
 
                 # Filter secrets from env output
-                if first_word in ('printenv', 'env'):
+                if base_cmd in ('printenv', 'env'):
                     lines = []
                     for line in resp.split('\n'):
                         key = line.split('=')[0] if '=' in line else ''
