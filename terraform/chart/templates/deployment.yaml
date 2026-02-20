@@ -14,6 +14,9 @@ spec:
     metadata:
       labels:
         {{- include "alert-analyzer.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       containers:
@@ -27,4 +30,3 @@ spec:
                 name: {{ include "alert-analyzer.fullname" . }}-secrets
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      restartPolicy: Always

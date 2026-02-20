@@ -29,7 +29,7 @@ class Config:
     # Bedrock
     bedrock_region: str = field(default_factory=lambda: os.environ.get('BEDROCK_REGION', 'us-west-2'))
     bedrock_model: str = field(default_factory=lambda: os.environ.get(
-        'BEDROCK_MODEL', 'anthropic.claude-sonnet-4-20250514-v1:0'
+        'BEDROCK_MODEL', 'us.anthropic.claude-opus-4-6-v1'
     ))
     bedrock_max_tokens: int = field(default_factory=lambda: int(os.environ.get('BEDROCK_MAX_TOKENS', '2048')))
     max_agent_turns: int = field(default_factory=lambda: int(os.environ.get('MAX_AGENT_TURNS', '10')))
