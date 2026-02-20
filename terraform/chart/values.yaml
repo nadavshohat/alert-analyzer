@@ -1,0 +1,48 @@
+image:
+  repository: ""
+  tag: "latest"
+  pullPolicy: Always
+
+bedrock:
+  region: "us-west-2"
+  model: "us.anthropic.claude-opus-4-6-v1"
+  maxTokens: 2048
+
+agent:
+  maxTurns: 10
+  pollInterval: 30
+  dedupWindow: 1800
+  logLookbackMinutes: 30
+
+events:
+  reasons: "CrashLoopBackOff,OOMKilled,BackOff,Failed,Error,Unhealthy"
+  excludeNamespaces: "kube-system,groundcover"
+
+clickhouse:
+  host: "groundcover-clickhouse"
+  port: 8123
+  user: "default"
+  database: "groundcover"
+
+groundcover:
+  baseUrl: "https://app.groundcover.com"
+  tenantUuid: ""
+  clusterName: ""
+
+timezone: "Asia/Jerusalem"
+
+serviceAccount:
+  create: true
+  name: "alert-analyzer"
+  annotations: {}
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    memory: "512Mi"
+
+secrets:
+  clickhousePassword: ""
+  slackWebhookUrl: ""
