@@ -45,6 +45,7 @@ class Config:
 
     # Cluster info
     cluster_name: str = field(default_factory=lambda: os.environ.get('CLUSTER_NAME', ''))
+    timezone: str = field(default_factory=lambda: os.environ.get('TZ', 'UTC'))
 
 
 
