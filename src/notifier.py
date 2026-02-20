@@ -59,7 +59,7 @@ class SlackNotifier:
   _Pod:_ `{event.pod_name}`
   _Message:_ {event.message[:200]}
 
-*Root Cause* _{analysis.confidence} confidence_
+*Root Cause* _({analysis.confidence} confidence)_
 > {analysis.root_cause}
 
 *Recommended Action*
