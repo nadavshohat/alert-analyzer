@@ -1,17 +1,28 @@
-FROM python:3.11-slim
+# Build stage: install dependencies into a venv
+FROM python:3.14-slim-bookworm AS builder
+
+WORKDIR /build
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --no-compile --prefer-binary -r requirements.txt
+
+# Runtime stage: copy only the venv + source (no pip/setuptools/wheel)
+FROM python:3.14-slim-bookworm
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && adduser --disabled-password --gecos "" --no-create-home --uid 10001 appuser
+
+COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
-
-# Create non-root user first
-RUN useradd -r -u 1000 appuser
-
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy source code and set permissions
 COPY --chown=appuser:appuser src/ .
 
-USER appuser
+USER 10001
 
-CMD ["python", "main.py"]
+ENTRYPOINT ["python", "main.py"]

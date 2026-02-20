@@ -26,7 +26,7 @@ class SlackNotifier:
 
     def __init__(self):
         self.webhook_url = config.slack_webhook_url
-        self.israel_tz = pytz.timezone('Asia/Jerusalem')
+        self.tz = pytz.timezone(config.timezone)
 
     def send(self, event: CrashEvent, analysis: Analysis) -> bool:
         """Send a crash analysis notification to Slack."""
@@ -38,7 +38,7 @@ class SlackNotifier:
         emoji = SEVERITY_EMOJI.get(event.reason, '\U0001F514')  # Bell as default
 
         # Format timestamp in Israel time
-        now_israel = datetime.now(self.israel_tz)
+        now_israel = datetime.now(self.tz)
         timestamp_str = now_israel.strftime('%H:%M')
 
         # Build Groundcover deep link

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+.github
+terraform
+README.md
+*.md
+__pycache__
+.venv
+.terraform
+*.tfstate
+*.tfplan
+.DS_Store
+.vscode
+.idea
