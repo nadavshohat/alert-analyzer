@@ -41,12 +41,10 @@ class Config:
     groundcover_base_url: str = field(default_factory=lambda: os.environ.get(
         'GROUNDCOVER_BASE_URL', 'https://app.groundcover.com'
     ))
-    groundcover_tenant_uuid: str = field(default_factory=lambda: os.environ.get(
-        'GROUNDCOVER_TENANT_UUID', '3a5edc8c-5cf8-44e6-9c01-270233ab11e4'
-    ))
+    groundcover_tenant_uuid: str = field(default_factory=lambda: os.environ.get('GROUNDCOVER_TENANT_UUID', ''))
 
     # Cluster info
-    cluster_name: str = field(default_factory=lambda: os.environ.get('CLUSTER_NAME', 'ensights-prod-cluster'))
+    cluster_name: str = field(default_factory=lambda: os.environ.get('CLUSTER_NAME', ''))
 
 
 

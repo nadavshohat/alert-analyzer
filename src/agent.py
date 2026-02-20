@@ -198,7 +198,7 @@ class AgentAnalyzer:
     @property
     def web_searcher(self):
         if self._web_searcher is None:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
             self._web_searcher = DDGS()
         return self._web_searcher
 
@@ -478,7 +478,7 @@ class AgentAnalyzer:
         query = params["query"]
 
         try:
-            results = list(self.web_searcher.text(query, max_results=5, region='wt-wt'))
+            results = list(self.web_searcher.text(query, max_results=5))
 
             if not results:
                 return "No web results found."

@@ -36,14 +36,14 @@ resource "aws_iam_role_policy" "bedrock" {
     Statement = [
       {
         Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
+        Action = ["bedrock:InvokeModel*"]
         Resource = [
           "arn:aws:bedrock:${var.bedrock_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model}"
         ]
       },
       {
         Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
+        Action = ["bedrock:InvokeModel*"]
         Resource = [
           "arn:aws:bedrock:us-east-1::foundation-model/${local.foundation_model_id}",
           "arn:aws:bedrock:us-east-2::foundation-model/${local.foundation_model_id}",

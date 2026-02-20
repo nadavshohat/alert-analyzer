@@ -74,13 +74,20 @@ class ClickhouseClient:
 
     def get_crash_events(self, since_timestamp: Optional[datetime] = None) -> List[CrashEvent]:
         """Poll for crash events from the events table."""
-        reasons_list = ",".join(f"'{r}'" for r in config.event_reasons)
-        exclude_ns = ",".join(f"'{ns}'" for ns in config.exclude_namespaces)
+        reasons_csv = ",".join(config.event_reasons)
+        exclude_csv = ",".join(config.exclude_namespaces)
 
         # Use provided timestamp or default to 1 minute ago
-        time_filter = "now() - INTERVAL 1 MINUTE"
+        params = {
+            "reasons": reasons_csv,
+            "exclude_ns": exclude_csv,
+        }
+
         if since_timestamp:
-            time_filter = f"toDateTime64('{since_timestamp.strftime('%Y-%m-%d %H:%M:%S')}', 9)"
+            time_filter = "toDateTime64({since_ts:String}, 9)"
+            params["since_ts"] = since_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            time_filter = "now() - INTERVAL 1 MINUTE"
 
         query = f"""
         SELECT
@@ -92,16 +99,16 @@ class ClickhouseClient:
             message
         FROM {config.clickhouse_database}.events
         WHERE type = 'Warning'
-          AND reason IN ({reasons_list})
+          AND has(splitByChar(',', {{reasons:String}}), reason)
           AND timestamp > {time_filter}
-          AND entity_namespace NOT IN ({exclude_ns})
+          AND NOT has(splitByChar(',', {{exclude_ns:String}}), entity_namespace)
           AND entity_namespace != ''
         ORDER BY timestamp DESC
         LIMIT 100
         """
 
         try:
-            result = self._execute_query(query)
+            result = self._execute_query(query, params)
             events = []
             for row in result.get('data', []):
                 events.append(CrashEvent(
