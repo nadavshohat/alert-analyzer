@@ -51,16 +51,25 @@ class ClickhouseClient:
     def __init__(self):
         self.base_url = f"http://{config.clickhouse_host}:{config.clickhouse_port}"
         self.auth = (config.clickhouse_user, config.clickhouse_password)
+        self.session = requests.Session()
+        self.session.auth = self.auth
+        self._consecutive_failures = 0
 
-    def _execute_query(self, query: str) -> dict:
+    def _execute_query(self, query: str, params: Optional[dict] = None) -> dict:
         """Execute a Clickhouse query and return JSON results."""
-        url = f"{self.base_url}/?query={quote(query + ' FORMAT JSON')}"
+        url = f"{self.base_url}/"
+        query_params = {"query": query + " FORMAT JSON"}
+        if params:
+            for k, v in params.items():
+                query_params[f"param_{k}"] = v
         try:
-            response = requests.get(url, auth=self.auth, timeout=30)
+            response = self.session.get(url, params=query_params, timeout=30)
             response.raise_for_status()
+            self._consecutive_failures = 0
             return response.json()
         except requests.RequestException as e:
-            logger.error(f"Clickhouse query failed: {e}")
+            self._consecutive_failures += 1
+            logger.error(f"Clickhouse query failed (consecutive: {self._consecutive_failures}): {e}")
             raise
 
     def get_crash_events(self, since_timestamp: Optional[datetime] = None) -> List[CrashEvent]:
@@ -109,23 +118,24 @@ class ClickhouseClient:
             logger.error(f"Failed to get crash events: {e}")
             return []
 
-    def get_logs_for_workload(self, namespace: str, workload: str) -> List[LogEntry]:
+    def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
         """Fetch recent logs for a workload."""
+        lookback = minutes if minutes > 0 else config.log_lookback_minutes
         query = f"""
         SELECT
             timestamp,
             level,
             content
         FROM {config.clickhouse_database}.logs
-        WHERE namespace = '{namespace}'
-          AND workload = '{workload}'
-          AND timestamp > now() - INTERVAL {config.log_lookback_minutes} MINUTE
+        WHERE namespace = {{ns:String}}
+          AND workload = {{wl:String}}
+          AND timestamp > now() - INTERVAL {lookback} MINUTE
         ORDER BY timestamp DESC
         LIMIT 200
         """
 
         try:
-            result = self._execute_query(query)
+            result = self._execute_query(query, {"ns": namespace, "wl": workload})
             logs = []
             for row in result.get('data', []):
                 logs.append(LogEntry(
@@ -139,23 +149,24 @@ class ClickhouseClient:
             logger.error(f"Failed to get logs for {namespace}/{workload}: {e}")
             return []
 
-    def get_logs_for_pod(self, namespace: str, pod_name: str) -> List[LogEntry]:
+    def get_logs_for_pod(self, namespace: str, pod_name: str, minutes: int = 0) -> List[LogEntry]:
         """Fetch recent logs for a specific pod."""
+        lookback = minutes if minutes > 0 else config.log_lookback_minutes
         query = f"""
         SELECT
             timestamp,
             level,
             content
         FROM {config.clickhouse_database}.logs
-        WHERE namespace = '{namespace}'
-          AND pod_name = '{pod_name}'
-          AND timestamp > now() - INTERVAL {config.log_lookback_minutes} MINUTE
+        WHERE namespace = {{ns:String}}
+          AND pod_name = {{pod:String}}
+          AND timestamp > now() - INTERVAL {lookback} MINUTE
         ORDER BY timestamp DESC
         LIMIT 200
         """
 
         try:
-            result = self._execute_query(query)
+            result = self._execute_query(query, {"ns": namespace, "pod": pod_name})
             logs = []
             for row in result.get('data', []):
                 logs.append(LogEntry(
@@ -179,15 +190,15 @@ class ClickhouseClient:
             return_code,
             status
         FROM {config.clickhouse_database}.traces
-        WHERE namespace = '{namespace}'
-          AND workload = '{workload}'
+        WHERE namespace = {{ns:String}}
+          AND workload = {{wl:String}}
           AND start_timestamp > now() - INTERVAL {config.log_lookback_minutes} MINUTE
         ORDER BY duration_seconds DESC
         LIMIT 20
         """
 
         try:
-            result = self._execute_query(query)
+            result = self._execute_query(query, {"ns": namespace, "wl": workload})
             traces = []
             for row in result.get('data', []):
                 traces.append(TraceEntry(

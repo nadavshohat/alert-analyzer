@@ -67,6 +67,10 @@ class SlackNotifier:
 
 _Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool calls_ | <{gc_link}|View in Groundcover>"""
 
+        # Slack section block text has a 3000 char limit
+        if len(message_text) > 2900:
+            message_text = message_text[:2900] + "\n... (truncated)"
+
         payload = {
             "text": f"{emoji} {event.reason}: {event.workload} in {event.namespace}",
             "blocks": [
