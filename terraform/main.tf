@@ -6,7 +6,7 @@ resource "helm_release" "alert_analyzer" {
 
   values = [yamlencode({
     image = {
-      repository = aws_ecr_repository.alert_analyzer.repository_url
+      repository = var.image_repository
       tag        = var.image_tag
     }
 
