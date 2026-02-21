@@ -1,5 +1,5 @@
 image:
-  repository: ""
+  repository: "public.ecr.aws/j5u9j5q0/alert-analyzer"
   tag: "latest"
   pullPolicy: Always
 
