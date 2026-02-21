@@ -74,6 +74,16 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 
 ## Deployment
 
+### Prerequisites
+
+Create a Slack webhook URL secret in AWS Secrets Manager:
+
+```bash
+aws secretsmanager create-secret \
+  --name "alert-analyzer/slack-webhook-url" \
+  --secret-string "https://hooks.slack.com/services/T.../B.../xxx"
+```
+
 ### With Terraform (recommended)
 
 The `terraform/` directory is a self-contained module. It creates an IAM role (IRSA) and deploys the Helm chart.
@@ -86,6 +96,11 @@ module "alert_analyzer" {
 ```
 
 Image defaults to `public.ecr.aws/j5u9j5q0/alert-analyzer`. Override with `image_repository` if needed.
+
+The module auto-discovers:
+- ClickHouse password from `groundcover-clickhouse` K8s secret
+- Slack webhook from `alert-analyzer/slack-webhook-url` in Secrets Manager
+- OIDC provider from the EKS cluster (for IRSA)
 
 ### Build Docker Image
 
