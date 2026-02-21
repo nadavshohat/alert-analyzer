@@ -70,6 +70,11 @@ variable "exclude_namespaces" {
   default     = "kube-system,groundcover"
 }
 
+variable "image_repository" {
+  description = "Docker image repository (e.g. public.ecr.aws/xxx/alert-analyzer)"
+  type        = string
+}
+
 variable "image_tag" {
   description = "Docker image tag"
   type        = string
