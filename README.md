@@ -71,20 +71,19 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 | `BEDROCK_MODEL` | `us.anthropic.claude-opus-4-6-v1` | Claude model ID |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook (secret) |
 | `CLUSTER_NAME` | - | Kubernetes cluster name |
-| `GROUNDCOVER_TENANT_UUID` | - | Groundcover tenant ID |
 | `TZ` | `UTC` | Timezone for Slack timestamps |
 
 ## Deployment
 
 ### With Terraform (recommended)
 
-The `terraform/` directory is a self-contained module. It creates ECR, IAM role (IRSA), and deploys the Helm chart.
+The `terraform/` directory is a self-contained module. It creates an IAM role (IRSA) and deploys the Helm chart.
 
 ```hcl
 module "alert_analyzer" {
-  source                  = "./terraform"
-  cluster_name            = "my-cluster"
-  groundcover_tenant_uuid = "abc-123"
+  source           = "./terraform"
+  cluster_name     = "my-cluster"
+  image_repository = "public.ecr.aws/xxx/alert-analyzer"
 }
 ```
 

@@ -34,7 +34,6 @@ resource "helm_release" "alert_analyzer" {
 
     groundcover = {
       baseUrl     = var.groundcover_base_url
-      tenantUuid  = var.groundcover_tenant_uuid
       clusterName = var.cluster_name
     }
 

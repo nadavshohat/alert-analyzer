@@ -41,8 +41,6 @@ class Config:
     groundcover_base_url: str = field(default_factory=lambda: os.environ.get(
         'GROUNDCOVER_BASE_URL', 'https://app.groundcover.com'
     ))
-    groundcover_tenant_uuid: str = field(default_factory=lambda: os.environ.get('GROUNDCOVER_TENANT_UUID', ''))
-
     # Cluster info
     cluster_name: str = field(default_factory=lambda: os.environ.get('CLUSTER_NAME', ''))
     timezone: str = field(default_factory=lambda: os.environ.get('TZ', 'UTC'))
