@@ -70,7 +70,7 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 | `BEDROCK_MODEL` | `us.anthropic.claude-opus-4-6-v1` | Claude model ID |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook (secret) |
 | `CLUSTER_NAME` | - | Kubernetes cluster name |
-| `TZ` | `UTC` | Timezone for Slack timestamps |
+| `TZ` | `Asia/Jerusalem` | Timezone for Slack timestamps |
 
 ## Deployment
 
