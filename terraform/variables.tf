@@ -66,8 +66,9 @@ variable "exclude_namespaces" {
 }
 
 variable "image_repository" {
-  description = "Docker image repository (e.g. public.ecr.aws/xxx/alert-analyzer)"
+  description = "Docker image repository"
   type        = string
+  default     = "public.ecr.aws/j5u9j5q0/alert-analyzer"
 }
 
 variable "image_tag" {
