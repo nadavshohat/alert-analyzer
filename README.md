@@ -42,7 +42,6 @@ Groundcover ClickHouse (events, logs, traces)
 │   ├── variables.tf      # All inputs
 │   ├── data.tf           # Auto-discovery (EKS, secrets)
 │   ├── iam.tf            # IRSA role + Bedrock policy
-│   ├── ecr.tf            # ECR repository
 │   ├── outputs.tf
 │   ├── providers.tf
 │   └── chart/            # Helm chart
@@ -81,18 +80,18 @@ The `terraform/` directory is a self-contained module. It creates an IAM role (I
 
 ```hcl
 module "alert_analyzer" {
-  source           = "./terraform"
-  cluster_name     = "my-cluster"
-  image_repository = "public.ecr.aws/xxx/alert-analyzer"
+  source       = "./terraform"
+  cluster_name = "my-cluster"
 }
 ```
+
+Image defaults to `public.ecr.aws/j5u9j5q0/alert-analyzer`. Override with `image_repository` if needed.
 
 ### Build Docker Image
 
 ```bash
-docker build --platform linux/amd64 -t alert-analyzer:latest .
-docker tag alert-analyzer:latest <ecr-repo>/alert-analyzer:latest
-docker push <ecr-repo>/alert-analyzer:latest
+docker build --platform linux/amd64 -t public.ecr.aws/j5u9j5q0/alert-analyzer:latest .
+docker push public.ecr.aws/j5u9j5q0/alert-analyzer:latest
 ```
 
 ## License
