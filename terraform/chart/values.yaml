@@ -26,7 +26,6 @@ clickhouse:
 
 groundcover:
   baseUrl: "https://app.groundcover.com"
-  tenantUuid: ""
   clusterName: ""
 
 timezone: "Asia/Jerusalem"

@@ -20,6 +20,5 @@ data:
   BEDROCK_MAX_TOKENS: {{ .Values.bedrock.maxTokens | quote }}
   MAX_AGENT_TURNS: {{ .Values.agent.maxTurns | quote }}
   GROUNDCOVER_BASE_URL: {{ .Values.groundcover.baseUrl | quote }}
-  GROUNDCOVER_TENANT_UUID: {{ .Values.groundcover.tenantUuid | quote }}
   CLUSTER_NAME: {{ .Values.groundcover.clusterName | quote }}
   TZ: {{ .Values.timezone | quote }}

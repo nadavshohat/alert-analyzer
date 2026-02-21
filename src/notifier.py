@@ -114,15 +114,12 @@ _Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool c
     def _build_groundcover_link(self, event: CrashEvent) -> str:
         """Build a deep link to the workload in Groundcover UI."""
         base = config.groundcover_base_url.rstrip('/')
-        tenant_uuid = config.groundcover_tenant_uuid
         cluster = config.cluster_name
         workload = event.workload
 
         return (
-            f"{base}/infrastructure?"
+            f"{base}/workloads?"
             f"duration=Last+hour&"
-            f"tenantUUID={tenant_uuid}&"
             f"backendId={cluster}&"
-            f"selectedTab=Pods&"
             f"freeText={workload}"
         )

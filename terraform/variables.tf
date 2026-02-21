@@ -4,11 +4,6 @@ variable "cluster_name" {
   type        = string
 }
 
-variable "groundcover_tenant_uuid" {
-  description = "Groundcover tenant UUID"
-  type        = string
-}
-
 # Optional — override defaults
 variable "namespace" {
   description = "Kubernetes namespace"
