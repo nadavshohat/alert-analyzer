@@ -118,8 +118,11 @@ _Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool c
         workload = event.workload
 
         return (
-            f"{base}/workloads?"
-            f"duration=Last+hour&"
+            f"{base}/workloads/workload-status?"
             f"backendId={cluster}&"
-            f"freeText={workload}"
+            f"cluster={cluster}&"
+            f"duration=Last+hour&"
+            f"namespace={event.namespace}&"
+            f"workload={workload}&"
+            f"selectedTab=Infrastructure"
         )
