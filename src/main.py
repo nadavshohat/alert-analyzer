@@ -3,7 +3,7 @@ import logging
 import signal
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from config import config
@@ -34,7 +34,7 @@ class AlertAnalyzer:
     def _is_duplicate(self, event: CrashEvent) -> bool:
         """Check if we've already processed this event recently."""
         key = event.key
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         dedup_window = timedelta(seconds=config.dedup_window_seconds)
 
         if key in self.seen_events:
@@ -49,7 +49,7 @@ class AlertAnalyzer:
 
     def _cleanup_seen_events(self):
         """Remove old entries from the dedup cache."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         dedup_window = timedelta(seconds=config.dedup_window_seconds)
 
         expired_keys = [
@@ -78,7 +78,7 @@ class AlertAnalyzer:
     def poll(self):
         """Poll for new crash events and process them."""
         try:
-            poll_start = datetime.now()
+            poll_start = datetime.now(timezone.utc)
             events = self.clickhouse.get_crash_events(since_timestamp=self.last_poll_time)
             self.last_poll_time = poll_start
 
