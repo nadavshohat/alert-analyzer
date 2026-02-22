@@ -37,20 +37,11 @@ Groundcover ClickHouse (events, logs, traces)
 │   ├── tools.py          # Tool handlers (logs, traces, exec, web search)
 │   ├── clickhouse.py     # ClickHouse queries
 │   └── notifier.py       # Slack formatting
-├── terraform/
-│   ├── main.tf           # helm_release (local chart)
-│   ├── variables.tf      # All inputs
-│   ├── data.tf           # Auto-discovery (EKS, secrets)
-│   ├── iam.tf            # IRSA role + Bedrock policy
-│   ├── outputs.tf
-│   ├── providers.tf
-│   └── chart/            # Helm chart
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
 ├── Dockerfile            # Multi-stage build
 └── requirements.txt
 ```
+
+Terraform module + Helm chart live in [ProjectCircleIL/terraform-modules](https://github.com/ProjectCircleIL/terraform-modules) under `modules/extras/alert-analyzer/`.
 
 ## Configuration
 
@@ -86,11 +77,11 @@ aws secretsmanager create-secret \
 
 ### With Terraform (recommended)
 
-The `terraform/` directory is a self-contained module. It creates an IAM role (IRSA) and deploys the Helm chart.
+The Terraform module lives in [ProjectCircleIL/terraform-modules](https://github.com/ProjectCircleIL/terraform-modules) at `modules/extras/alert-analyzer/`.
 
 ```hcl
 module "alert_analyzer" {
-  source       = "./terraform"
+  source       = "git::https://github.com/ProjectCircleIL/terraform-modules.git//modules/extras/alert-analyzer"
   cluster_name = "my-cluster"
 }
 ```
