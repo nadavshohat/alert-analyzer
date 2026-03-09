@@ -32,7 +32,7 @@ class LogEntry:
     """Represents a log entry from Clickhouse."""
     timestamp: datetime
     level: str
-    content: str
+    body: str
 
 
 @dataclass
@@ -125,67 +125,75 @@ class ClickhouseClient:
             logger.error(f"Failed to get crash events: {e}")
             return []
 
-    def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
-        """Fetch recent logs for a workload."""
+    def _fetch_logs(self, where_clause: str, params: dict, minutes: int, label: str) -> List[LogEntry]:
+        """Fetch logs: error/fatal first, then backfill with the rest."""
         lookback = minutes if minutes > 0 else config.log_lookback_minutes
-        query = f"""
-        SELECT
-            timestamp,
-            level,
-            content
+        time_filter = f"timestamp > now() - INTERVAL {lookback} MINUTE"
+
+        # Error/fatal logs first
+        error_query = f"""
+        SELECT timestamp, level, body
         FROM {config.clickhouse_database}.logs
-        WHERE namespace = {{ns:String}}
-          AND workload = {{wl:String}}
-          AND timestamp > now() - INTERVAL {lookback} MINUTE
+        WHERE {where_clause} AND {time_filter}
+          AND level IN ('error', 'fatal', 'ERROR', 'FATAL')
         ORDER BY timestamp DESC
-        LIMIT 200
+        LIMIT 100
         """
 
         try:
-            result = self._execute_query(query, {"ns": namespace, "wl": workload})
+            result = self._execute_query(error_query, params)
             logs = []
             for row in result.get('data', []):
                 logs.append(LogEntry(
                     timestamp=datetime.fromisoformat(row['timestamp'].replace(' ', 'T')),
                     level=row['level'],
-                    content=row['content']
+                    body=row['body']
                 ))
-            logger.info(f"Found {len(logs)} log entries for {namespace}/{workload}")
+
+            # Backfill with non-error logs
+            remaining = 200 - len(logs)
+            if remaining > 0:
+                other_query = f"""
+                SELECT timestamp, level, body
+                FROM {config.clickhouse_database}.logs
+                WHERE {where_clause} AND {time_filter}
+                  AND level NOT IN ('error', 'fatal', 'ERROR', 'FATAL')
+                ORDER BY timestamp DESC
+                LIMIT {remaining}
+                """
+                result = self._execute_query(other_query, params)
+                for row in result.get('data', []):
+                    logs.append(LogEntry(
+                        timestamp=datetime.fromisoformat(row['timestamp'].replace(' ', 'T')),
+                        level=row['level'],
+                        body=row['body']
+                    ))
+
+            # Sort all by timestamp
+            logs.sort(key=lambda l: l.timestamp)
+            logger.info(f"Found {len(logs)} log entries for {label}")
             return logs
         except Exception as e:
-            logger.error(f"Failed to get logs for {namespace}/{workload}: {e}")
+            logger.error(f"Failed to get logs for {label}: {e}")
             return []
+
+    def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
+        """Fetch recent logs for a workload."""
+        return self._fetch_logs(
+            where_clause="namespace = {ns:String} AND workload = {wl:String}",
+            params={"ns": namespace, "wl": workload},
+            minutes=minutes,
+            label=f"{namespace}/{workload}"
+        )
 
     def get_logs_for_pod(self, namespace: str, pod_name: str, minutes: int = 0) -> List[LogEntry]:
         """Fetch recent logs for a specific pod."""
-        lookback = minutes if minutes > 0 else config.log_lookback_minutes
-        query = f"""
-        SELECT
-            timestamp,
-            level,
-            content
-        FROM {config.clickhouse_database}.logs
-        WHERE namespace = {{ns:String}}
-          AND pod_name = {{pod:String}}
-          AND timestamp > now() - INTERVAL {lookback} MINUTE
-        ORDER BY timestamp DESC
-        LIMIT 200
-        """
-
-        try:
-            result = self._execute_query(query, {"ns": namespace, "pod": pod_name})
-            logs = []
-            for row in result.get('data', []):
-                logs.append(LogEntry(
-                    timestamp=datetime.fromisoformat(row['timestamp'].replace(' ', 'T')),
-                    level=row['level'],
-                    content=row['content']
-                ))
-            logger.info(f"Found {len(logs)} log entries for pod {namespace}/{pod_name}")
-            return logs
-        except Exception as e:
-            logger.error(f"Failed to get logs for pod {namespace}/{pod_name}: {e}")
-            return []
+        return self._fetch_logs(
+            where_clause="namespace = {ns:String} AND pod_name = {pod:String}",
+            params={"ns": namespace, "pod": pod_name},
+            minutes=minutes,
+            label=f"pod {namespace}/{pod_name}"
+        )
 
     def get_slow_traces(self, namespace: str, workload: str) -> List[TraceEntry]:
         """Fetch slowest traces for a workload (sorted by latency desc)."""

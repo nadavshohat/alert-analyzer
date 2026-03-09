@@ -62,6 +62,7 @@ class ToolHandler:
             "get_traces": self._get_traces,
             "exec_in_pod": self._exec_in_pod,
             "search_web": self._search_web,
+            "describe_pod": self._describe_pod,
         }
         handler = handlers.get(name)
         if not handler:
@@ -86,13 +87,13 @@ class ToolHandler:
             return f"No logs found for this workload/pod in the last {minutes} minutes."
 
         lines = []
-        for log in logs[:150]:
+        for log in logs[:200]:
             ts = log.timestamp.strftime('%H:%M:%S')
             level = (log.level or 'info').upper()
-            content = log.content[:500] if log.content else ''
-            lines.append(f"[{ts}] [{level}] {content}")
+            text = (log.body or '')[:1500]
+            lines.append(f"[{ts}] [{level}] {text}")
 
-        return f"Found {len(logs)} log entries (showing first {min(len(logs), 150)}):\n" + "\n".join(lines)
+        return f"Found {len(logs)} log entries (showing first {min(len(logs), 200)}):\n" + "\n".join(lines)
 
     # -- get_traces --
 
@@ -207,6 +208,36 @@ class ToolHandler:
         except Exception as e:
             logger.debug(f"Failed to resolve running pod: {e}")
         return pod_name
+
+    # -- describe_pod --
+
+    def _describe_pod(self, params: dict) -> str:
+        namespace = params["namespace"]
+        pod_name = params["pod_name"]
+
+        if not self.k8s_api:
+            return "Kubernetes API not available."
+
+        try:
+            pod = self.k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            # Return full pod spec as JSON — let the agent see everything
+            from kubernetes.client import ApiClient
+            pod_dict = ApiClient().sanitize_for_serialization(pod)
+            import json
+            return json.dumps(pod_dict, indent=2, default=str)
+        except Exception as e:
+            return f"Failed to describe pod: {e}"
+
+    def is_pod_terminating(self, namespace: str, pod_name: str) -> bool:
+        """Check if a pod is being deleted (terminating)."""
+        if not self.k8s_api:
+            return False
+        try:
+            pod = self.k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            return pod.metadata.deletion_timestamp is not None
+        except Exception:
+            # Pod not found = already gone
+            return True
 
     # -- search_web --
 

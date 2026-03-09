@@ -35,7 +35,10 @@ class SlackNotifier:
             return False
 
         # Get emoji for severity
-        emoji = SEVERITY_EMOJI.get(event.reason, '\U0001F514')  # Bell as default
+        if analysis.resolved:
+            emoji = '\u2705'  # Green checkmark for resolved
+        else:
+            emoji = SEVERITY_EMOJI.get(event.reason, '\U0001F514')  # Bell as default
 
         # Format timestamp in Israel time
         now_israel = datetime.now(self.tz)
@@ -48,7 +51,8 @@ class SlackNotifier:
         recommendation = analysis.recommendations[0] if analysis.recommendations else "Review logs manually"
 
         # Build the message using Slack mrkdwn (NOT markdown!)
-        message_text = f"""*{emoji} {event.reason}: {event.workload}*
+        resolved_tag = " (Auto-Resolved)" if analysis.resolved else ""
+        message_text = f"""*{emoji} {event.reason}: {event.workload}{resolved_tag}*
 
 *Summary*
 {analysis.summary}
@@ -72,7 +76,7 @@ _Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool c
             message_text = message_text[:2900] + "\n... (truncated)"
 
         payload = {
-            "text": f"{emoji} {event.reason}: {event.workload} in {event.namespace}",
+            "text": f"{emoji} {event.reason}: {event.workload}{resolved_tag} in {event.namespace}",
             "blocks": [
                 {
                     "type": "section",

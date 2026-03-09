@@ -10,6 +10,7 @@ from config import config
 from clickhouse import ClickhouseClient, CrashEvent
 from agent import AgentAnalyzer
 from notifier import SlackNotifier
+from tools import ToolHandler
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +28,7 @@ class AlertAnalyzer:
         self.clickhouse = ClickhouseClient()
         self.agent = AgentAnalyzer()
         self.notifier = SlackNotifier()
+        self.k8s_tools = ToolHandler()
         self.seen_events: Dict[str, datetime] = {}  # key -> last_seen timestamp
         self.last_poll_time: Optional[datetime] = None
         self._shutdown = threading.Event()
@@ -83,8 +85,21 @@ class AlertAnalyzer:
             self.last_poll_time = poll_start
 
             for event in events:
-                if not self._is_duplicate(event):
-                    self.process_event(event)
+                if self._is_duplicate(event):
+                    continue
+                # Skip Unhealthy events for pods that are terminating (shutdown probe noise)
+                if event.reason == "Unhealthy" and self.k8s_tools.is_pod_terminating(event.namespace, event.pod_name):
+                    logger.info(f"Skipping Unhealthy event for terminating pod: {event.namespace}/{event.pod_name}")
+                    continue
+                # Skip Unhealthy events from infra namespaces (e.g. istio startup probes)
+                if event.reason == "Unhealthy" and event.namespace in config.unhealthy_skip_namespaces:
+                    logger.info(f"Skipping Unhealthy event in {event.namespace} (unhealthy_skip_namespaces)")
+                    continue
+                # Skip startup probe failures — transient during pod initialization
+                if event.reason == "Unhealthy" and "Startup probe failed" in (event.message or ""):
+                    logger.info(f"Skipping startup probe failure: {event.namespace}/{event.pod_name}")
+                    continue
+                self.process_event(event)
 
             # Cleanup old dedup entries periodically
             self._cleanup_seen_events()

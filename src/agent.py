@@ -16,25 +16,29 @@ SYSTEM_PROMPT = """You are a Kubernetes incident responder investigating a pod c
 
 You have tools to investigate. Use them strategically:
 1. ALWAYS start by fetching logs (get_logs with the workload name)
-2. If you need more context, exec into the pod to read source code, config files, or environment variables
-3. If logs show specific errors you don't recognize, search the web
-4. If the issue might be latency-related (health check timeouts, slow responses), check traces
+2. Use describe_pod to check the pod's current state, restart count, last termination reason (OOMKilled, Error, etc.), and resource limits
+3. If you need more context, exec into the pod to read source code, config files, or environment variables
+4. If logs show specific errors you don't recognize, search the web
+5. If the issue might be latency-related (health check timeouts, slow responses), check traces
 
 Important investigation guidelines:
 - Be efficient - use the minimum number of tool calls needed
 - For OOMKilled: this could be a code issue (memory leak) OR the memory limit is simply too low for the workload. Check BOTH possibilities. Try to exec and read the source code to verify.
 - If exec fails (pod restarting), retry once - there may be a brief window when the container is up
 - Be TRANSPARENT: if you could not exec into the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
+- For Unhealthy (readiness/liveness probe failures): ALWAYS use describe_pod to check the probe configuration (timeoutSeconds, periodSeconds, failureThreshold). A very low timeoutSeconds (e.g. 1s) is often the root cause — any minor delay will trigger a failure. Report the actual probe timeout in your analysis.
+- IMPORTANT: Understand async vs sync frameworks. uvicorn/FastAPI/Starlette are ASYNC — a single worker handles many concurrent requests via asyncio. Slow async DB queries do NOT block health checks. gunicorn with sync workers IS blocking — slow requests block health checks. Do NOT claim "single worker blocks health checks" for async frameworks unless you confirm the code uses blocking/synchronous operations.
 
 CRITICAL: Your final message MUST use ONLY this format with NO other text before or after:
 
 SUMMARY: <one sentence, max 15 words>
 ROOT_CAUSE: <1-2 sentences explaining WHY this happened>
 CONFIDENCE: <high/medium/low - based on what you were able to verify>
+STATUS: <active/resolved - "resolved" if the pod has recovered and the issue was transient, "active" if the issue is ongoing>
 RECOMMENDATIONS:
 - <actionable fix>
 
-Do NOT add any commentary, explanation, or thinking outside this format. Just the four fields."""
+Do NOT add any commentary, explanation, or thinking outside this format. Just the five fields."""
 
 TOOL_DEFINITIONS = [
     {
@@ -90,6 +94,22 @@ TOOL_DEFINITIONS = [
     },
     {
         "toolSpec": {
+            "name": "describe_pod",
+            "description": "Get detailed pod status including phase, container states (Running/Waiting/Terminated), last termination reason (e.g. OOMKilled), restart count, resource requests/limits, and conditions. Use this to check WHY a pod crashed (OOMKilled vs error exit) and current resource configuration.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Kubernetes namespace"},
+                        "pod_name": {"type": "string", "description": "Pod name"}
+                    },
+                    "required": ["namespace", "pod_name"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
             "name": "search_web",
             "description": "Search the web for error solutions, documentation, or best practices. Use specific error messages combined with the technology name for best results.",
             "inputSchema": {
@@ -115,6 +135,7 @@ class Analysis:
     raw_response: str
     tool_calls_made: int = 0
     confidence: str = "medium"
+    resolved: bool = False
 
 
 class AgentAnalyzer:
@@ -193,8 +214,8 @@ class AgentAnalyzer:
                         try:
                             result = self.tools.execute(tool_name, tool_input)
                             logger.info(f"Tool result #{tool_calls_made} ({tool_name}): {result[:300]}")
-                            if len(result) > 8000:
-                                result = result[:8000] + "\n... (truncated)"
+                            if len(result) > 20000:
+                                result = result[:20000] + "\n... (truncated)"
                             tool_results.append({
                                 "toolResult": {
                                     "toolUseId": tool["toolUseId"],
@@ -225,15 +246,35 @@ class AgentAnalyzer:
                     tool_calls_made=tool_calls_made
                 )
 
-        logger.warning(f"Agent hit max turns ({config.max_agent_turns})")
-        return Analysis(
-            summary="Investigation inconclusive — could not determine root cause",
-            root_cause="Complex issue requiring manual review. The automated investigation gathered data but could not reach a definitive conclusion.",
-            recommendations=["Review logs and traces manually in Groundcover"],
-            raw_response="Investigation inconclusive",
-            tool_calls_made=tool_calls_made,
-            confidence="low"
-        )
+        logger.warning(f"Agent hit max turns ({config.max_agent_turns}), requesting summary")
+        # Ask the model to summarize what it found so far (no tools)
+        try:
+            messages.append({"role": "user", "content": [{"text":
+                "You've run out of investigation steps. Based on everything you've gathered so far, "
+                "provide your best analysis using the required format (SUMMARY, ROOT_CAUSE, CONFIDENCE, STATUS, RECOMMENDATIONS). "
+                "Be honest about what you found vs what you couldn't verify. Do NOT say 'inconclusive' — share what you actually learned."
+            }]})
+            response = self.bedrock.converse(
+                modelId=config.bedrock_model,
+                messages=messages,
+                system=system,
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": config.bedrock_max_tokens, "temperature": 0.2}
+            )
+            raw_text = self._extract_text(response["output"]["message"])
+            analysis = self._parse_response(raw_text)
+            analysis.tool_calls_made = tool_calls_made
+            return analysis
+        except Exception as e:
+            logger.error(f"Failed to get summary after max turns: {e}")
+            return Analysis(
+                summary="Investigation inconclusive — could not determine root cause",
+                root_cause="Complex issue requiring manual review. The automated investigation gathered data but could not reach a definitive conclusion.",
+                recommendations=["Review logs and traces manually in Groundcover"],
+                raw_response="Investigation inconclusive",
+                tool_calls_made=tool_calls_made,
+                confidence="low"
+            )
 
     @staticmethod
     def _extract_text(message: dict) -> str:
@@ -249,6 +290,7 @@ class AgentAnalyzer:
         summary = ""
         root_cause = ""
         confidence = "medium"
+        resolved = False
         recommendations = []
 
         lines = response.strip().split('\n')
@@ -268,11 +310,15 @@ class AgentAnalyzer:
                 if val in ('high', 'medium', 'low'):
                     confidence = val
                 current_section = 'confidence'
+            elif line.upper().startswith('STATUS:'):
+                val = line[7:].strip().lower()
+                resolved = val == 'resolved'
+                current_section = 'status'
             elif line.upper().startswith('RECOMMENDATION'):
                 current_section = 'recommendations'
             elif current_section == 'recommendations' and line.startswith('-'):
                 recommendations.append(line[1:].strip())
-            elif current_section == 'root_cause' and line and not line.upper().startswith(('RECOMMENDATION', 'CONFIDENCE')):
+            elif current_section == 'root_cause' and line and not line.upper().startswith(('RECOMMENDATION', 'CONFIDENCE', 'STATUS')):
                 root_cause += ' ' + line if root_cause else line
 
         if not summary and not root_cause:
@@ -289,5 +335,6 @@ class AgentAnalyzer:
             root_cause=root_cause or summary or response[:200],
             recommendations=recommendations or ["Review logs manually"],
             raw_response=response,
-            confidence=confidence
+            confidence=confidence,
+            resolved=resolved
         )

@@ -20,10 +20,13 @@ class Config:
 
     # Filtering
     exclude_namespaces: List[str] = field(default_factory=lambda: os.environ.get(
-        'EXCLUDE_NAMESPACES', 'kube-system,groundcover'
-    ).split(','))
+        'EXCLUDE_NAMESPACES', ''
+    ).split(',') if os.environ.get('EXCLUDE_NAMESPACES', '') else [])
     event_reasons: List[str] = field(default_factory=lambda: os.environ.get(
         'EVENT_REASONS', 'CrashLoopBackOff,OOMKilled,BackOff,Failed,Error,Unhealthy'
+    ).split(','))
+    unhealthy_skip_namespaces: List[str] = field(default_factory=lambda: os.environ.get(
+        'UNHEALTHY_SKIP_NAMESPACES', 'kube-system,groundcover,istio-system,external-secrets,kubescape'
     ).split(','))
 
     # Bedrock
@@ -32,7 +35,7 @@ class Config:
         'BEDROCK_MODEL', 'us.anthropic.claude-opus-4-6-v1'
     ))
     bedrock_max_tokens: int = field(default_factory=lambda: int(os.environ.get('BEDROCK_MAX_TOKENS', '2048')))
-    max_agent_turns: int = field(default_factory=lambda: int(os.environ.get('MAX_AGENT_TURNS', '10')))
+    max_agent_turns: int = field(default_factory=lambda: int(os.environ.get('MAX_AGENT_TURNS', '20')))
 
     # Slack
     slack_webhook_url: str = field(default_factory=lambda: os.environ.get('SLACK_WEBHOOK_URL', ''))
