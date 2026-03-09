@@ -26,7 +26,7 @@ class Config:
         'EVENT_REASONS', 'CrashLoopBackOff,OOMKilled,BackOff,Failed,Error,Unhealthy'
     ).split(','))
     unhealthy_skip_namespaces: List[str] = field(default_factory=lambda: os.environ.get(
-        'UNHEALTHY_SKIP_NAMESPACES', 'kube-system,groundcover,istio-system,external-secrets'
+        'UNHEALTHY_SKIP_NAMESPACES', 'kube-system,groundcover,istio-system,external-secrets,kubescape'
     ).split(','))
 
     # Bedrock
