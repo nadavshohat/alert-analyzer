@@ -2,6 +2,7 @@
 import logging
 import signal
 import sys
+import time
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -62,13 +63,39 @@ class AlertAnalyzer:
         for key in expired_keys:
             del self.seen_events[key]
 
+    def _is_pod_healthy(self, event: CrashEvent) -> bool:
+        """Check if the pod is currently ready (all containers ready)."""
+        if not self.k8s_tools.k8s_api:
+            return False
+        try:
+            pod = self.k8s_tools.k8s_api.read_namespaced_pod(
+                name=event.pod_name, namespace=event.namespace
+            )
+            if not pod.status.container_statuses:
+                return False
+            return all(cs.ready for cs in pod.status.container_statuses)
+        except Exception:
+            # Pod not found = already replaced
+            return False
+
     def process_event(self, event: CrashEvent):
         """Process a single crash event."""
-        logger.info(f"Processing crash event: {event.namespace}/{event.workload} - {event.reason}")
+        logger.info(f"Event detected: {event.namespace}/{event.workload} - {event.reason}, waiting 30s before analysis...")
+        time.sleep(30)
+
+        # Pre-check: if pod is already healthy, skip entirely
+        if self._is_pod_healthy(event):
+            logger.info(f"Skipping {event.namespace}/{event.workload} - pod is healthy after 30s wait (transient)")
+            return
 
         # Agent investigates autonomously using tools
         analysis = self.agent.analyze(event)
         logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
+
+        # Skip auto-resolved — no need to notify on transient issues
+        if analysis.resolved:
+            logger.info(f"Skipping notification for {event.namespace}/{event.workload} - auto-resolved")
+            return
 
         # Send to Slack
         success = self.notifier.send(event, analysis)
