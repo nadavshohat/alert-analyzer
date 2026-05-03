@@ -16,10 +16,11 @@ SYSTEM_PROMPT = """You are a Kubernetes incident responder investigating a pod c
 
 You have tools to investigate. Use them strategically:
 1. ALWAYS start by fetching logs (get_logs with the workload name)
-2. Use describe_pod to check the pod's current state, restart count, last termination reason (OOMKilled, Error, etc.), and resource limits
-3. If you need more context, exec into the pod to read source code, config files, or environment variables
-4. If logs show specific errors you don't recognize, search the web
-5. If the issue might be latency-related (health check timeouts, slow responses), check traces
+2. Use describe_pod to check the pod's current state, restart count, last termination reason (OOMKilled, Error, etc.), and resource limits. The TERMINATION SUMMARY at the top of describe_pod output is the FIRST place to look — it tells you why the previous container died (OOMKilled vs Error vs nothing).
+3. For ANY Unhealthy / probe failure / restart event: call get_metrics next, BEFORE analyzing code. Probe failures are usually a SYMPTOM (the kernel killed the process for OOM, the TCP socket is gone, probe gets connection refused). Code analysis without metrics = pattern-matching = hallucination.
+4. If you need more context, exec into the pod to read source code, config files, or environment variables
+5. If logs show specific errors you don't recognize, search the web
+6. If the issue might be latency-related (health check timeouts, slow responses), check traces
 
 Important investigation guidelines:
 - Be efficient - use the minimum number of tool calls needed
@@ -27,6 +28,8 @@ Important investigation guidelines:
 - If exec fails (pod restarting), retry once - there may be a brief window when the container is up
 - Be TRANSPARENT: if you could not exec into the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
 - For Unhealthy (readiness/liveness probe failures): ALWAYS use describe_pod to check the probe configuration (timeoutSeconds, periodSeconds, failureThreshold). A very low timeoutSeconds (e.g. 1s) is often the root cause — any minor delay will trigger a failure. Report the actual probe timeout in your analysis.
+- ALWAYS use get_metrics for probe failures and restarts. If memory_max_mb >= 90% of the container's memory limit just before the event, the cause is OOMKilled and the probe failure is downstream of the kill — recommend bumping memory limit or finding the leak, NOT framework/concurrency changes.
+- Code patterns (run_in_executor, ThreadPool, async/await) are HYPOTHESES, not evidence. Do NOT conclude "GIL contention", "event loop starvation", or "thread blocking" without quantitative evidence: a trace duration exceeding the probe's timeoutSeconds, OR sustained CPU at the container's CPU limit, OR explicit profiling output. Pattern-matching on code without metrics is unsupported speculation.
 - IMPORTANT: Understand async vs sync frameworks. uvicorn/FastAPI/Starlette are ASYNC — a single worker handles many concurrent requests via asyncio. Slow async DB queries do NOT block health checks. gunicorn with sync workers IS blocking — slow requests block health checks. Do NOT claim "single worker blocks health checks" for async frameworks unless you confirm the code uses blocking/synchronous operations.
 
 CRITICAL: Your final message MUST use ONLY this format with NO other text before or after:
@@ -71,6 +74,32 @@ TOOL_DEFINITIONS = [
                         "workload": {"type": "string", "description": "Workload/deployment name"}
                     },
                     "required": ["namespace", "workload"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_metrics",
+            "description": (
+                "Get container memory and CPU metrics for a pod over a recent time window. "
+                "Returns peak/avg/last memory in MiB, peak/avg CPU as percent, and flags "
+                "if memory peak >= 90% of the container's memory limit (likely OOMKilled). "
+                "CRITICAL for diagnosing OOM, CPU saturation, and resource exhaustion. "
+                "ALWAYS call this for Unhealthy / restart / probe-failure events to rule out "
+                "OOM before analyzing code patterns. Probe failures are often the SYMPTOM of an "
+                "OOM kill (process dead → TCP socket gone → probe gets connection refused), not "
+                "the cause. Pattern-matching code without metrics leads to wrong conclusions."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Kubernetes namespace"},
+                        "pod_name": {"type": "string", "description": "Pod name (the specific pod that had the event)"},
+                        "minutes": {"type": "integer", "description": "How far back to look in minutes (default: 15)"}
+                    },
+                    "required": ["namespace", "pod_name"]
                 }
             }
         }

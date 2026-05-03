@@ -45,6 +45,18 @@ class TraceEntry:
     status: str
 
 
+@dataclass
+class MetricsSummary:
+    """Aggregated container metrics over a time window."""
+    samples: int
+    memory_max_mb: float
+    memory_avg_mb: float
+    memory_last_mb: float
+    cpu_max_pct: float
+    cpu_avg_pct: float
+    window_minutes: int
+
+
 class ClickhouseClient:
     """Client for querying Groundcover Clickhouse."""
 
@@ -194,6 +206,52 @@ class ClickhouseClient:
             minutes=minutes,
             label=f"pod {namespace}/{pod_name}"
         )
+
+    def get_metrics_for_pod(self, namespace: str, pod_name: str, minutes: int = 15) -> Optional[MetricsSummary]:
+        """Fetch container memory and CPU metrics for a pod over a time window.
+
+        Returns peak/avg/last memory in MiB and peak/avg CPU as a percent.
+        Useful to spot OOM events: if memory_max_mb is close to the container
+        memory limit just before a restart, the cause is OOM, not code.
+        """
+        query = """
+        SELECT
+            count() as samples,
+            max(memory_usage) / 1048576.0 as mem_max_mb,
+            avg(memory_usage) / 1048576.0 as mem_avg_mb,
+            argMax(memory_usage, start_timestamp) / 1048576.0 as mem_last_mb,
+            max(cpu_usage_percent) as cpu_max_pct,
+            avg(cpu_usage_percent) as cpu_avg_pct
+        FROM {db:Identifier}.infra_measurements
+        WHERE entity_kind = 'Container'
+          AND parent_name = {pod:String}
+          AND namespace = {ns:String}
+          AND start_timestamp > now() - INTERVAL {mins:UInt32} MINUTE
+        """
+        try:
+            result = self._execute_query(query, {
+                "db": config.clickhouse_database,
+                "pod": pod_name,
+                "ns": namespace,
+                "mins": str(minutes),
+            })
+            data = result.get('data', [])
+            if not data or int(data[0].get('samples', 0)) == 0:
+                logger.info(f"No metrics for pod {namespace}/{pod_name} in last {minutes} minutes")
+                return None
+            row = data[0]
+            return MetricsSummary(
+                samples=int(row['samples']),
+                memory_max_mb=float(row['mem_max_mb'] or 0),
+                memory_avg_mb=float(row['mem_avg_mb'] or 0),
+                memory_last_mb=float(row['mem_last_mb'] or 0),
+                cpu_max_pct=float(row['cpu_max_pct'] or 0),
+                cpu_avg_pct=float(row['cpu_avg_pct'] or 0),
+                window_minutes=minutes,
+            )
+        except Exception as e:
+            logger.error(f"Failed to get metrics for pod {namespace}/{pod_name}: {e}")
+            return None
 
     def get_slow_traces(self, namespace: str, workload: str) -> List[TraceEntry]:
         """Fetch slowest traces for a workload (sorted by latency desc)."""
