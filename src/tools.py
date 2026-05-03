@@ -5,7 +5,7 @@ import time
 from typing import List
 
 from config import config
-from clickhouse import ClickhouseClient, LogEntry
+from clickhouse import ClickhouseClient, LogEntry, MetricsSummary
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,28 @@ SHELL_METACHARACTERS = frozenset(['|', ';', '&&', '||', '`', '$(', '>', '<', '&'
 SECRET_KEYWORDS = frozenset([
     'PASSWORD', 'SECRET', 'TOKEN', 'KEY', 'CREDENTIAL', 'PRIVATE', 'API_KEY',
 ])
+
+
+def _parse_memory_to_mib(value: str) -> float:
+    """Parse a Kubernetes memory string (e.g. '2Gi', '512Mi', '1024M') to MiB."""
+    s = value.strip()
+    if not s:
+        return 0.0
+    suffixes = {
+        'Ki': 1 / 1024, 'Mi': 1, 'Gi': 1024, 'Ti': 1024 * 1024,
+        'K': 1000 / (1024 * 1024), 'M': 1000 * 1000 / (1024 * 1024),
+        'G': 1000 ** 3 / (1024 ** 2), 'T': 1000 ** 4 / (1024 ** 2),
+    }
+    for suffix, factor in sorted(suffixes.items(), key=lambda x: -len(x[0])):
+        if s.endswith(suffix):
+            try:
+                return float(s[:-len(suffix)]) * factor
+            except ValueError:
+                return 0.0
+    try:
+        return float(s) / (1024 * 1024)
+    except ValueError:
+        return 0.0
 
 
 class ToolHandler:
@@ -60,6 +82,7 @@ class ToolHandler:
         handlers = {
             "get_logs": self._get_logs,
             "get_traces": self._get_traces,
+            "get_metrics": self._get_metrics,
             "exec_in_pod": self._exec_in_pod,
             "search_web": self._search_web,
             "describe_pod": self._describe_pod,
@@ -113,6 +136,51 @@ class ToolHandler:
             lines.append(f"[{ts}] {dur} - {t.span_name} ({status})")
 
         return f"Found {len(traces)} traces (slowest first):\n" + "\n".join(lines)
+
+    # -- get_metrics --
+
+    def _get_metrics(self, params: dict) -> str:
+        namespace = params["namespace"]
+        pod_name = params["pod_name"]
+        minutes = int(params.get("minutes", 15))
+
+        summary: MetricsSummary | None = self.clickhouse.get_metrics_for_pod(namespace, pod_name, minutes)
+        if not summary:
+            return f"No metrics found for {namespace}/{pod_name} in last {minutes} minutes."
+
+        memory_limit_mb = self._get_memory_limit_mb(namespace, pod_name)
+        limit_pct_str = ""
+        oom_hint = ""
+        if memory_limit_mb:
+            pct = (summary.memory_max_mb / memory_limit_mb) * 100
+            limit_pct_str = f" ({pct:.0f}% of {memory_limit_mb:.0f} MiB limit)"
+            if pct >= 90:
+                oom_hint = " [WARNING: peak >= 90% of limit — likely OOMKilled]"
+
+        return (
+            f"Metrics for {namespace}/{pod_name} over last {summary.window_minutes} min "
+            f"({summary.samples} samples):\n"
+            f"  memory peak: {summary.memory_max_mb:.0f} MiB{limit_pct_str}{oom_hint}\n"
+            f"  memory avg:  {summary.memory_avg_mb:.0f} MiB\n"
+            f"  memory last: {summary.memory_last_mb:.0f} MiB\n"
+            f"  cpu peak:    {summary.cpu_max_pct:.1f}%\n"
+            f"  cpu avg:     {summary.cpu_avg_pct:.1f}%"
+        )
+
+    def _get_memory_limit_mb(self, namespace: str, pod_name: str) -> float:
+        """Best-effort memory limit lookup from k8s API (in MiB)."""
+        if not self.k8s_api:
+            return 0.0
+        try:
+            pod = self.k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            for c in pod.spec.containers:
+                limits = (c.resources.limits or {}) if c.resources else {}
+                mem = limits.get("memory")
+                if mem:
+                    return _parse_memory_to_mib(mem)
+        except Exception as e:
+            logger.debug(f"Could not fetch memory limit: {e}")
+        return 0.0
 
     # -- exec_in_pod --
 
@@ -220,11 +288,29 @@ class ToolHandler:
 
         try:
             pod = self.k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
-            # Return full pod spec as JSON — let the agent see everything
             from kubernetes.client import ApiClient
             pod_dict = ApiClient().sanitize_for_serialization(pod)
             import json
-            return json.dumps(pod_dict, indent=2, default=str)
+
+            # Surface termination reasons up front so they're not buried in JSON.
+            highlights = []
+            for c in (pod.status.container_statuses or []):
+                rc = c.restart_count or 0
+                last_term = (c.last_state.terminated if c.last_state else None)
+                if last_term and last_term.reason:
+                    highlights.append(
+                        f"  container {c.name}: lastState.terminated.reason={last_term.reason} "
+                        f"exitCode={last_term.exit_code} restartCount={rc} at {last_term.finished_at}"
+                    )
+                else:
+                    highlights.append(f"  container {c.name}: restartCount={rc}")
+
+            header = (
+                f"=== TERMINATION SUMMARY (read this FIRST) ===\n"
+                + ("\n".join(highlights) if highlights else "  (no container statuses available)")
+                + "\n=== FULL POD SPEC ===\n"
+            )
+            return header + json.dumps(pod_dict, indent=2, default=str)
         except Exception as e:
             return f"Failed to describe pod: {e}"
 
