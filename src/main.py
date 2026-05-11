@@ -64,7 +64,11 @@ class AlertAnalyzer:
             del self.seen_events[key]
 
     def _is_pod_healthy(self, event: CrashEvent) -> bool:
-        """Check if the pod is currently ready (all containers ready)."""
+        """Pod looks transient only if it's ready now AND nothing terminated abnormally recently.
+
+        An OOMKill restarts the container in place, so the new instance can be Ready
+        seconds later while the previous instance just died. Catch that via lastState.
+        """
         if not self.k8s_tools.k8s_api:
             return False
         try:
@@ -73,7 +77,21 @@ class AlertAnalyzer:
             )
             if not pod.status.container_statuses:
                 return False
-            return all(cs.ready for cs in pod.status.container_statuses)
+            if not all(cs.ready for cs in pod.status.container_statuses):
+                return False
+            recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            for cs in pod.status.container_statuses:
+                last = cs.last_state.terminated if cs.last_state else None
+                if not last or not last.finished_at:
+                    continue
+                finished_at = last.finished_at
+                if finished_at.tzinfo is None:
+                    finished_at = finished_at.replace(tzinfo=timezone.utc)
+                if finished_at < recent_cutoff:
+                    continue
+                if last.reason == 'OOMKilled' or (last.exit_code or 0) != 0:
+                    return False
+            return True
         except Exception:
             # Pod not found = already replaced
             return False
