@@ -21,6 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reasons that retry with kubelet backoff (image pulls, container create) — give them
+# longer than 30s to self-resolve before we spend tokens analyzing.
+SLOW_RETRY_REASONS = frozenset(['Failed', 'BackOff'])
+DEFAULT_GRACE_SECONDS = 30
+SLOW_RETRY_GRACE_SECONDS = 120
+
 
 class AlertAnalyzer:
     """Main orchestrator for crash detection and analysis."""
@@ -64,10 +70,15 @@ class AlertAnalyzer:
             del self.seen_events[key]
 
     def _is_pod_healthy(self, event: CrashEvent) -> bool:
-        """Pod looks transient only if it's ready now AND nothing terminated abnormally recently.
+        """Return True if the alert is stale and we should skip analysis.
 
-        An OOMKill restarts the container in place, so the new instance can be Ready
-        seconds later while the previous instance just died. Catch that via lastState.
+        Transient cases we skip:
+        - Pod no longer exists (controller cleaned it up — alert is stale)
+        - Pod phase is Succeeded (job/workflow finished cleanly after an early hiccup)
+        - Pod is Ready AND no recent OOMKill / non-zero exit in lastState
+
+        OOMKill restarts the container in place, so the new instance can be Ready
+        seconds after the kill — that's why we still check lastState even when Ready.
         """
         if not self.k8s_tools.k8s_api:
             return False
@@ -75,35 +86,41 @@ class AlertAnalyzer:
             pod = self.k8s_tools.k8s_api.read_namespaced_pod(
                 name=event.pod_name, namespace=event.namespace
             )
-            if not pod.status.container_statuses:
-                return False
-            if not all(cs.ready for cs in pod.status.container_statuses):
-                return False
-            recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
-            for cs in pod.status.container_statuses:
-                last = cs.last_state.terminated if cs.last_state else None
-                if not last or not last.finished_at:
-                    continue
-                finished_at = last.finished_at
-                if finished_at.tzinfo is None:
-                    finished_at = finished_at.replace(tzinfo=timezone.utc)
-                if finished_at < recent_cutoff:
-                    continue
-                if last.reason == 'OOMKilled' or (last.exit_code or 0) != 0:
-                    return False
-            return True
-        except Exception:
-            # Pod not found = already replaced
+        except Exception as e:
+            # 404 = pod gone, alert is stale. Other errors (auth, network) = be conservative, analyze.
+            if getattr(e, 'status', None) == 404:
+                return True
             return False
+
+        if pod.status.phase == 'Succeeded':
+            return True
+        if not pod.status.container_statuses:
+            return False
+        if not all(cs.ready for cs in pod.status.container_statuses):
+            return False
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        for cs in pod.status.container_statuses:
+            last = cs.last_state.terminated if cs.last_state else None
+            if not last or not last.finished_at:
+                continue
+            finished_at = last.finished_at
+            if finished_at.tzinfo is None:
+                finished_at = finished_at.replace(tzinfo=timezone.utc)
+            if finished_at < recent_cutoff:
+                continue
+            if last.reason == 'OOMKilled' or (last.exit_code or 0) != 0:
+                return False
+        return True
 
     def process_event(self, event: CrashEvent):
         """Process a single crash event."""
-        logger.info(f"Event detected: {event.namespace}/{event.workload} - {event.reason}, waiting 30s before analysis...")
-        time.sleep(30)
+        grace = SLOW_RETRY_GRACE_SECONDS if event.reason in SLOW_RETRY_REASONS else DEFAULT_GRACE_SECONDS
+        logger.info(f"Event detected: {event.namespace}/{event.workload} - {event.reason}, waiting {grace}s before analysis...")
+        time.sleep(grace)
 
-        # Pre-check: if pod is already healthy, skip entirely
+        # Pre-check: if pod is already healthy/gone, skip entirely
         if self._is_pod_healthy(event):
-            logger.info(f"Skipping {event.namespace}/{event.workload} - pod is healthy after 30s wait (transient)")
+            logger.info(f"Skipping {event.namespace}/{event.workload} - transient (pod healthy/succeeded/gone after {grace}s)")
             return
 
         # Agent investigates autonomously using tools
