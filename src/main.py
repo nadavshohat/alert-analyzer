@@ -127,6 +127,12 @@ class AlertAnalyzer:
         analysis = self.agent.analyze(event)
         logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
 
+        # Post-analysis recheck: pod may have recovered while the agent was investigating
+        # (typical agent run is 1-2 min, enough time for image pulls to succeed on retry).
+        if self._is_pod_healthy(event):
+            logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
+            return
+
         # Skip auto-resolved — no need to notify on transient issues
         if analysis.resolved:
             logger.info(f"Skipping notification for {event.namespace}/{event.workload} - auto-resolved")
