@@ -69,7 +69,8 @@ Several layers filter out events that aren't worth alerting on:
 1. **Dedup by `namespace/workload/reason`** for `DEDUP_WINDOW_SECONDS` (default 300s) - `main.py:_is_duplicate`
 2. **Grace period before analysis**: 30s default, 120s for `Failed`/`BackOff` (image pulls retry on kubelet backoff at 10/20/40/80s). After the wait, `_is_pod_healthy` skips the event if any of: the pod is gone (404), `pod.status.phase == 'Succeeded'` (workflow/job completed), or the pod is Ready *and* no container has a `lastState.terminated` with `OOMKilled` or non-zero exit in the last 10 minutes. Checking `lastState` (not just current readiness) matters because OOMKill restarts the container in place - the new instance can be Ready seconds after the kill.
 3. **Per-reason skips** in `poll()`: terminating pods (Unhealthy noise during shutdown), `UNHEALTHY_SKIP_NAMESPACES`, and any Unhealthy event whose message contains "Startup probe failed".
-4. **Auto-resolved gate**: if the agent's final `STATUS:` line is `resolved`, no Slack message is sent.
+4. **Post-analysis recheck**: `_is_pod_healthy` runs again right before sending Slack. Catches pods that recovered while the agent was investigating (typical agent run is 1-2 min — long enough for ImagePullBackOff to clear on the next kubelet retry).
+5. **Auto-resolved gate**: if the agent's final `STATUS:` line is `resolved`, no Slack message is sent.
 
 When changing filter logic, remember the dedup key is `namespace/workload/reason` - a per-pod loop on the same workload collapses to one alert by design.
 
