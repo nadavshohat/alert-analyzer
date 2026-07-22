@@ -86,6 +86,7 @@ class ToolHandler:
             "exec_in_pod": self._exec_in_pod,
             "search_web": self._search_web,
             "describe_pod": self._describe_pod,
+            "get_previous_logs": self._get_previous_logs,
         }
         handler = handlers.get(name)
         if not handler:
@@ -313,6 +314,48 @@ class ToolHandler:
             return header + json.dumps(pod_dict, indent=2, default=str)
         except Exception as e:
             return f"Failed to describe pod: {e}"
+
+    # -- get_previous_logs --
+
+    def _get_previous_logs(self, params: dict) -> str:
+        """Logs of the previous (crashed) container instance, via the k8s API
+        (equivalent to `logs --previous`). This is where a startup panic or
+        crash-loop error lives when get_logs (observability platform) is empty,
+        because the crashed instance's stdout often never reaches ingestion."""
+        namespace = params.get("namespace", "")
+        pod_name = params.get("pod_name", "")
+        container = params.get("container", "")
+
+        if not namespace or not pod_name:
+            return "get_previous_logs requires namespace and pod_name."
+        if not self.k8s_api:
+            return "Kubernetes API not available."
+
+        try:
+            # Default to the crashed container: the one with a terminated
+            # lastState, else the first container.
+            if not container:
+                pod = self.k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+                statuses = pod.status.container_statuses or []
+                crashed = [c for c in statuses if c.last_state and c.last_state.terminated]
+                container = crashed[0].name if crashed else (statuses[0].name if statuses else "")
+
+            logs = self.k8s_api.read_namespaced_pod_log(
+                name=pod_name,
+                namespace=namespace,
+                container=container or None,
+                previous=True,
+                tail_lines=200,
+            )
+            label = f" [{container}]" if container else ""
+            if not logs or not logs.strip():
+                return (
+                    f"No previous-container logs for {namespace}/{pod_name}{label}. "
+                    "The crashed container may have exited before writing anything."
+                )
+            return f"Previous (crashed) container logs for {namespace}/{pod_name}{label}:\n" + logs[-6000:]
+        except Exception as e:
+            return f"Failed to fetch previous-container logs: {e}"
 
     def is_pod_terminating(self, namespace: str, pod_name: str) -> bool:
         """Check if a pod is being deleted (terminating)."""
