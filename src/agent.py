@@ -18,8 +18,9 @@ You have tools to investigate. Use them strategically:
 1. ALWAYS start by fetching logs (get_logs with the workload name)
 2. Use describe_pod to check the pod's current state, restart count, last termination reason (OOMKilled, Error, etc.), and resource limits. The TERMINATION SUMMARY at the top of describe_pod output is the FIRST place to look — it tells you why the previous container died (OOMKilled vs Error vs nothing).
 3. For ANY Unhealthy / probe failure / restart event: call get_metrics next, BEFORE analyzing code. Probe failures are usually a SYMPTOM (the kernel killed the process for OOM, the TCP socket is gone, probe gets connection refused). Code analysis without metrics = pattern-matching = hallucination.
-4. If you need more context, exec into the pod to read source code, config files, or environment variables
-5. If logs show specific errors you don't recognize, search the web
+4. If describe_pod shows a non-zero Error exit (or restarts) and get_logs returned nothing, call get_previous_logs. A startup panic or crash-loop message lives in the PREVIOUS (crashed) container instance, not the current one, and get_logs (observability platform) usually misses it. This is the single most important step for a crash with empty logs - do not skip it.
+5. If you need more context, exec into the pod to read source code, config files, or environment variables
+6. If logs show specific errors you don't recognize, search the web for BACKGROUND ONLY
 6. If the issue might be latency-related (health check timeouts, slow responses), check traces
 
 Important investigation guidelines:
@@ -27,6 +28,7 @@ Important investigation guidelines:
 - For OOMKilled: this could be a code issue (memory leak) OR the memory limit is simply too low for the workload. Check BOTH possibilities. Try to exec and read the source code to verify.
 - If exec fails (pod restarting), retry once - there may be a brief window when the container is up
 - Be TRANSPARENT: if you could not exec into the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
+- NEVER derive a ROOT_CAUSE from search_web results alone. Web search is background context, not evidence. If get_logs AND get_previous_logs are both empty and you could not exec into the pod, you do NOT have the evidence to name a cause: set CONFIDENCE: low, STATUS per the pod's current health, and state the investigation is inconclusive pending previous-container logs. A web-matched pattern reported as the root cause is worse than an honest "inconclusive".
 - For Unhealthy (readiness/liveness probe failures): ALWAYS use describe_pod to check the probe configuration (timeoutSeconds, periodSeconds, failureThreshold). A very low timeoutSeconds (e.g. 1s) is often the root cause — any minor delay will trigger a failure. Report the actual probe timeout in your analysis.
 - ALWAYS use get_metrics for probe failures and restarts. If memory_max_mb >= 90% of the container's memory limit just before the event, the cause is OOMKilled and the probe failure is downstream of the kill — recommend bumping memory limit or finding the leak, NOT framework/concurrency changes.
 - Code patterns (run_in_executor, ThreadPool, async/await) are HYPOTHESES, not evidence. Do NOT conclude "GIL contention", "event loop starvation", or "thread blocking" without quantitative evidence: a trace duration exceeding the probe's timeoutSeconds, OR sustained CPU at the container's CPU limit, OR explicit profiling output. Pattern-matching on code without metrics is unsupported speculation.
@@ -131,6 +133,30 @@ TOOL_DEFINITIONS = [
                     "properties": {
                         "namespace": {"type": "string", "description": "Kubernetes namespace"},
                         "pod_name": {"type": "string", "description": "Pod name"}
+                    },
+                    "required": ["namespace", "pod_name"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_previous_logs",
+            "description": (
+                "Fetch stdout/stderr of the PREVIOUS (crashed) container instance via the "
+                "Kubernetes API (equivalent to 'logs --previous'). This is where a startup panic "
+                "or crash-loop error message lives when get_logs returns nothing, the crashed "
+                "instance's output often never reaches the observability platform. ALWAYS call "
+                "this when describe_pod shows a non-zero Error exit or restarts and get_logs is "
+                "empty. Defaults to the crashed container if none is given."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Kubernetes namespace"},
+                        "pod_name": {"type": "string", "description": "Pod name"},
+                        "container": {"type": "string", "description": "Container name (optional; defaults to the crashed container)"}
                     },
                     "required": ["namespace", "pod_name"]
                 }
