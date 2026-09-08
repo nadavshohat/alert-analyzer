@@ -57,7 +57,7 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 | `EXCLUDE_NAMESPACES` | `kube-system,groundcover` | Ignored namespaces |
 | `EVENT_REASONS` | `CrashLoopBackOff,OOMKilled,...` | Event types to monitor |
 | `BEDROCK_REGION` | `us-west-2` | AWS Bedrock region |
-| `BEDROCK_MODEL` | `us.anthropic.claude-opus-4-6-v1` | Claude model ID |
+| `BEDROCK_MODEL` | `us.anthropic.claude-sonnet-5` | Claude model ID (Bedrock inference profile) |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook (secret) |
 | `CLUSTER_NAME` | - | Kubernetes cluster name |
 | `TZ` | `UTC` | Timezone for Slack timestamps (invalid value falls back to UTC) |
