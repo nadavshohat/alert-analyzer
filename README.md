@@ -64,6 +64,37 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 | `BEDROCK_MAX_TOKENS` | `2048` | Max output tokens per Bedrock call |
 | `MAX_AGENT_TURNS` | `20` | Max investigation steps before forced summary |
 | `UNHEALTHY_SKIP_NAMESPACES` | `kube-system,groundcover,...` | Namespaces whose Unhealthy events are skipped |
+| `EVENT_SOURCE` | `clickhouse` | Where crash events come from: `clickhouse` or `kubernetes` |
+| `LOG_SOURCE` | `clickhouse` | Where logs come from: `clickhouse`, `kubernetes`, or `loki` |
+| `METRIC_SOURCE` | `clickhouse` | Where metrics come from: `clickhouse`, `kubernetes`, or `prometheus` |
+| `TRACE_SOURCE` | `clickhouse` | `clickhouse` or `none` (only Groundcover/ClickHouse has traces) |
+| `LOKI_URL` | - | Base URL when `LOG_SOURCE=loki` (e.g. `http://loki:3100`) |
+| `LOKI_TENANT` | - | Sets `X-Scope-OrgID` for multi-tenant Loki |
+| `PROMETHEUS_URL` | - | Base URL when `METRIC_SOURCE=prometheus` (e.g. `http://prometheus:9090`) |
+
+### Telemetry backends
+
+Each signal is selected independently, so a stack can mix backends. Defaults are all-ClickHouse (Groundcover), so existing deployments are unchanged. What each backend can serve:
+
+| Signal | ClickHouse (Groundcover) | Kubernetes API | Loki | Prometheus |
+|--------|--------------------------|----------------|------|------------|
+| events (trigger) | yes | yes | - | - |
+| logs | yes | yes | yes | - |
+| metrics | yes (history) | current only | - | yes (history) |
+| traces | yes | - | - | - |
+
+To run on a plain open-source cluster with no ClickHouse:
+
+```bash
+EVENT_SOURCE=kubernetes
+LOG_SOURCE=loki           # or kubernetes for pod-log reads with no Loki
+METRIC_SOURCE=prometheus  # or kubernetes for current memory via metrics-server
+TRACE_SOURCE=none
+LOKI_URL=http://loki.observability:3100
+PROMETHEUS_URL=http://prometheus.observability:9090
+```
+
+The Kubernetes-native backend needs no telemetry stack at all (events from the API, logs from pod-log reads, current memory from metrics-server), so `EVENT_SOURCE=kubernetes LOG_SOURCE=kubernetes METRIC_SOURCE=kubernetes TRACE_SOURCE=none` runs anywhere. Two limits to know: core Kubernetes events are retained about an hour, and metrics-server reports only current usage (no history).
 
 ## Deployment
 

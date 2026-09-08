@@ -24,19 +24,20 @@ Python 3.14 (`python:3.14-slim-bookworm`). Entry point is `src/main.py` (the Doc
 
 ## Architecture
 
-Seven files in `src/`, each one layer:
+Core layers in `src/`:
 
 - `main.py` -> `AlertAnalyzer`: polling loop, dedup, transient-event filters
-- `clickhouse.py` -> `ClickhouseClient`: HTTP queries against Groundcover's `events`, `logs`, `traces`, `infra_measurements` tables
+- `clickhouse.py` -> `ClickhouseClient` plus the shared wire types (`CrashEvent`, `LogEntry`, `MetricsSummary`, `TraceEntry`, `BackendError`): HTTP queries against Groundcover's `events`, `logs`, `traces`, `infra_measurements` tables. One of the telemetry sources
+- `backends/` -> pluggable telemetry sources. `base.py` holds the `EventSource`/`LogSource`/`MetricSource`/`TraceSource` protocols; `kubernetes.py`, `loki.py`, `prometheus.py` are implementations; `__init__.py` has the `build_*_source()` factories that pick a source per signal from config (`EVENT_SOURCE`/`LOG_SOURCE`/`METRIC_SOURCE`/`TRACE_SOURCE`, all default `clickhouse`). ClickHouse implements all four signals; the others cover a subset and the tool reports the rest unavailable
 - `classifier.py` -> `classify()`: deterministic first-pass triage. Diagnoses the failure classes whose cause is complete in pod status (image-pull, eviction, config-error) with no LLM call; returns `None` for everything else so the agent investigates
 - `agent.py` -> `AgentAnalyzer`: Bedrock Converse API tool-use loop (max 20 turns)
 - `tools.py` -> `ToolHandler`: implementations of the tools the agent can call
 - `notifier.py` -> `SlackNotifier`: mrkdwn formatting + Groundcover deep link
 - `config.py`: env-var-backed dataclass, single global `config`
 
-Data flow per event:
+Data flow per event (the event/log/metric/trace reads all go through the selected backend; ClickHouse is the default shown here):
 ```
-ClickHouse events table -> CrashEvent -> dedup -> 30s wait -> _is_pod_healthy check
+event source (ClickHouse events table) -> CrashEvent -> dedup -> 30s wait -> _is_pod_healthy check
   -> classify() (deterministic verdict for unambiguous classes, no LLM) OR
   -> AgentAnalyzer.analyze() (Bedrock Converse with toolConfig, looped until end_turn)
   -> Analysis (parsed from strict SUMMARY/ROOT_CAUSE/CONFIDENCE/STATUS/RECOMMENDATIONS text)
