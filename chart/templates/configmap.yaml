@@ -22,3 +22,16 @@ data:
   GROUNDCOVER_BASE_URL: {{ .Values.groundcover.baseUrl | quote }}
   CLUSTER_NAME: {{ .Values.groundcover.clusterName | quote }}
   TZ: {{ .Values.timezone | quote }}
+  EVENT_SOURCE: {{ .Values.sources.event | quote }}
+  LOG_SOURCE: {{ .Values.sources.log | quote }}
+  METRIC_SOURCE: {{ .Values.sources.metric | quote }}
+  TRACE_SOURCE: {{ .Values.sources.trace | quote }}
+  {{- if .Values.loki.url }}
+  LOKI_URL: {{ .Values.loki.url | quote }}
+  {{- end }}
+  {{- if .Values.loki.tenant }}
+  LOKI_TENANT: {{ .Values.loki.tenant | quote }}
+  {{- end }}
+  {{- if .Values.prometheus.url }}
+  PROMETHEUS_URL: {{ .Values.prometheus.url | quote }}
+  {{- end }}

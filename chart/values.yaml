@@ -51,6 +51,21 @@ resources:
   limits:
     memory: "512Mi"
 
+# Telemetry source selection (per signal). Defaults are all-clickhouse, so
+# existing installs are unchanged. See the repo README "Telemetry backends".
+sources:
+  event: "clickhouse"    # clickhouse | kubernetes
+  log: "clickhouse"      # clickhouse | kubernetes | loki
+  metric: "clickhouse"   # clickhouse | kubernetes | prometheus
+  trace: "clickhouse"    # clickhouse | none
+
+loki:
+  url: ""      # required when sources.log=loki, e.g. http://loki:3100
+  tenant: ""   # sets X-Scope-OrgID for multi-tenant Loki
+
+prometheus:
+  url: ""      # required when sources.metric=prometheus, e.g. http://prometheus:9090
+
 secrets:
   # Provide the two secret values inline (they land in the release), OR set
   # existingSecret to the name of a Secret you created yourself holding keys

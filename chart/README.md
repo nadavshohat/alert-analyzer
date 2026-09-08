@@ -31,6 +31,9 @@ helm install alert-analyzer ./chart -n observability \
 | `events.reasons` | crash reasons | event types that trigger analysis |
 | `events.excludeNamespaces` | `kube-system,groundcover` | ignored namespaces |
 | `clickhouse.host` / `port` / `user` / `database` | Groundcover defaults | telemetry backend |
+| `sources.event` / `log` / `metric` / `trace` | `clickhouse` | per-signal backend selection (see the repo README "Telemetry backends") |
+| `loki.url` / `loki.tenant` | `""` | Loki base URL and `X-Scope-OrgID`, used when `sources.log=loki` |
+| `prometheus.url` | `""` | Prometheus base URL, used when `sources.metric=prometheus` |
 | `groundcover.clusterName` | `""` | cluster label for Slack deep links |
 | `serviceAccount.annotations` | `{}` | set the IRSA role ARN here on EKS |
 | `secrets.existingSecret` | `""` | name of a Secret with `SLACK_WEBHOOK_URL` and `CLICKHOUSE_PASSWORD`; wins over the inline values |
