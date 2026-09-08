@@ -11,9 +11,24 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional, Protocol, runtime_checkable
 
-from clickhouse import CrashEvent, LogEntry, MetricsSummary, TraceEntry  # noqa: F401
+from clickhouse import BackendError, CrashEvent, LogEntry, MetricsSummary, TraceEntry  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+# Kubernetes object names are DNS-1123 subdomains (lowercase alphanumeric, '-', '.').
+# Backends that build a LogQL/PromQL query by string interpolation must validate
+# names against this before use: a pod_name or workload comes from the model's tool
+# call, and an unvalidated value like 'p"} | {namespace="other' would break out of
+# the label selector and defeat namespace scoping. ClickHouse is unaffected (it uses
+# parameterized queries); the Kubernetes client is unaffected (named parameters).
+_DNS1123 = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def validate_k8s_name(value: str, kind: str = "name") -> str:
+    """Return value if it is a valid Kubernetes object name, else raise BackendError."""
+    if not value or not _DNS1123.match(value):
+        raise BackendError(f"invalid {kind} for query: {value!r}")
+    return value
 
 
 @runtime_checkable

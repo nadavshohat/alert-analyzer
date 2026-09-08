@@ -7,6 +7,7 @@ import requests
 
 from clickhouse import BackendError, MetricsSummary
 from config import config
+from backends.base import validate_k8s_name
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,11 @@ class PrometheusSource:
     def get_metrics_for_pod(self, namespace: str, pod_name: str, minutes: int = 15) -> Optional[MetricsSummary]:
         if not self.base_url:
             raise BackendError("PROMETHEUS_URL is not set")
+        ns = validate_k8s_name(namespace, "namespace")
+        pod = validate_k8s_name(pod_name, "pod name")
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes)
-        expr = f'container_memory_working_set_bytes{{namespace="{namespace}",pod="{pod_name}",container!=""}}'
+        expr = f'container_memory_working_set_bytes{{namespace="{ns}",pod="{pod}",container!=""}}'
         params = {
             "query": expr,
             "start": str(start.timestamp()),

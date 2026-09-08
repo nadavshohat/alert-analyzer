@@ -198,3 +198,41 @@ def test_sources_satisfy_their_protocols():
     assert isinstance(LokiSource(), LogSource)
     assert isinstance(PrometheusSource(), MetricSource)
     assert isinstance(backends.NullTraceSource(), TraceSource)
+
+
+# ---- query-injection guards (namespace scoping bypass) ----
+
+def test_loki_rejects_injection_in_pod_name(monkeypatch):
+    src = LokiSource(base_url="http://loki:3100")
+    # Mock the HTTP call so a rejection can only come from validation, not a
+    # failed network request (which would also raise BackendError).
+    monkeypatch.setattr(src.session, "get",
+                        lambda *a, **k: _Resp({"data": {"result": []}}))
+    for bad in ['p"} | {namespace="other', 'a"} |= "x', "p'; drop"]:
+        try:
+            src.get_logs_for_pod("team-a", bad)
+            assert False, f"expected BackendError for {bad!r}"
+        except BackendError:
+            pass
+
+
+def test_prometheus_rejects_injection_in_pod_name(monkeypatch):
+    src = PrometheusSource(base_url="http://prom:9090")
+    monkeypatch.setattr(src.session, "get",
+                        lambda *a, **k: _Resp({"data": {"result": []}}))
+    try:
+        src.get_metrics_for_pod("team-a", 'p"} or container_memory_working_set_bytes{namespace=~".*')
+        assert False, "expected BackendError"
+    except BackendError:
+        pass
+
+
+def test_valid_names_still_build_queries(monkeypatch):
+    src = LokiSource(base_url="http://loki:3100")
+    seen = {}
+    monkeypatch.setattr(src.session, "get",
+                        lambda url, params=None, headers=None, timeout=None: (seen.update(params) or _Resp({"data": {"result": []}})))
+    src.get_logs_for_pod("team-a", "api-gw-7d9f8c6b5c-x2k9p")
+    assert seen["query"] == '{namespace="team-a",pod="api-gw-7d9f8c6b5c-x2k9p"}'
+    src.get_logs_for_workload("team-a", "api.gw")  # dot must be escaped in the regex position
+    assert seen["query"] == '{namespace="team-a",pod=~"api\\.gw.*"}'

@@ -1,5 +1,6 @@
 """Loki log source (LOG_SOURCE=loki). Logs only; query_range over LogQL."""
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -7,7 +8,7 @@ import requests
 
 from clickhouse import BackendError, LogEntry
 from config import config
-from backends.base import parse_level
+from backends.base import parse_level, validate_k8s_name
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,12 @@ class LokiSource:
         return entries[:200]
 
     def get_logs_for_pod(self, namespace: str, pod_name: str, minutes: int = 0) -> List[LogEntry]:
-        return self._query_range(f'{{namespace="{namespace}",pod="{pod_name}"}}', minutes)
+        ns = validate_k8s_name(namespace, "namespace")
+        pod = validate_k8s_name(pod_name, "pod name")
+        return self._query_range(f'{{namespace="{ns}",pod="{pod}"}}', minutes)
 
     def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
-        return self._query_range(f'{{namespace="{namespace}",pod=~"{workload}.*"}}', minutes)
+        ns = validate_k8s_name(namespace, "namespace")
+        wl = validate_k8s_name(workload, "workload")
+        # wl is a regex position here; escape it so a validated '.' stays literal.
+        return self._query_range(f'{{namespace="{ns}",pod=~"{re.escape(wl)}.*"}}', minutes)
