@@ -40,7 +40,7 @@ Groundcover ClickHouse (events, logs, traces)
 └── requirements.txt
 ```
 
-Terraform module + Helm chart live in [ProjectCircleIL/terraform-modules](https://github.com/ProjectCircleIL/terraform-modules) under `modules/extras/alert-analyzer/`.
+The Helm chart is in [`chart/`](chart/). A Terraform wrapper for AWS deployments lives in a separate private repo (see Deployment below).
 
 ## Configuration
 
@@ -67,33 +67,30 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 
 ## Deployment
 
-### Prerequisites
+The chart is in [`chart/`](chart/). It needs three things: AWS credentials for Bedrock (IRSA on EKS), a Slack webhook, and network reach to your telemetry backend (Groundcover ClickHouse today).
 
-Create a Slack webhook URL secret in AWS Secrets Manager:
+### With Helm
+
+Create a secret holding the two sensitive values, then install:
 
 ```bash
-aws secretsmanager create-secret \
-  --name "alert-analyzer/slack-webhook-url" \
-  --secret-string "https://hooks.slack.com/services/T.../B.../xxx"
+kubectl create namespace observability
+
+kubectl -n observability create secret generic alert-analyzer-secrets \
+  --from-literal=SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T.../B.../xxx" \
+  --from-literal=CLICKHOUSE_PASSWORD="<clickhouse-password>"
+
+helm install alert-analyzer ./chart -n observability \
+  --set secrets.existingSecret=alert-analyzer-secrets \
+  --set groundcover.clusterName=my-cluster \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="arn:aws:iam::<acct>:role/<irsa-role>"
 ```
 
-### With Terraform (recommended)
+To skip the pre-created secret, pass the values inline with `--set secrets.slackWebhookUrl=...` and `--set secrets.clickhousePassword=...` (they are stored in the Helm release). All other settings are in [`chart/values.yaml`](chart/values.yaml); the environment variables they map to are documented under Configuration above.
 
-The Terraform module lives in [ProjectCircleIL/terraform-modules](https://github.com/ProjectCircleIL/terraform-modules) at `modules/extras/alert-analyzer/`.
+### AWS deployments (ProjectCircle internal)
 
-```hcl
-module "alert_analyzer" {
-  source       = "git::https://github.com/ProjectCircleIL/terraform-modules.git//modules/extras/alert-analyzer"
-  cluster_name = "my-cluster"
-}
-```
-
-Image defaults to `public.ecr.aws/j5u9j5q0/alert-analyzer`. Override with `image_repository` if needed.
-
-The module auto-discovers:
-- ClickHouse password from `groundcover-clickhouse` K8s secret
-- Slack webhook from `alert-analyzer/slack-webhook-url` in Secrets Manager
-- OIDC provider from the EKS cluster (for IRSA)
+ProjectCircle wraps this chart with a private Terraform module that provisions the IRSA role, reads the Slack webhook from AWS Secrets Manager and the ClickHouse password from a K8s secret, and accepts the Bedrock model agreement. It is a convenience for our EKS clusters and is not required to run the tool.
 
 ### Build Docker Image
 

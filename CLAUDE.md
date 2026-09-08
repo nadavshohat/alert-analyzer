@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A long-running Kubernetes pod (`src/main.py`) that polls Groundcover's ClickHouse for crash events, runs an agentic Bedrock (Claude) investigation per event, and posts a Slack alert with root cause. Deployed via the Terraform module at `ProjectCircleIL/terraform-modules//modules/extras/alert-analyzer/` (Helm chart lives there, not in this repo).
+A long-running Kubernetes pod (`src/main.py`) that polls Groundcover's ClickHouse for crash events, runs an agentic Bedrock (Claude) investigation per event, and posts a Slack alert with root cause. Deployed with the Helm chart in `chart/`. ProjectCircle also has a private Terraform wrapper at `ProjectCircleIL/terraform-modules//modules/extras/alert-analyzer/` that installs this chart with AWS IRSA and secret discovery.
 
 ## Commands
 
@@ -78,6 +78,6 @@ When changing filter logic, remember the dedup key is `namespace/workload/reason
 
 ## Deployment context
 
-This repo ships only the container. The Helm chart, IRSA role, ClickHouse secret discovery, and Slack webhook lookup all live in the Terraform module (`ProjectCircleIL/terraform-modules` -> `modules/extras/alert-analyzer/`). Changes to env vars, ports, or service account permissions need a matching PR there.
+The container and the Helm chart (`chart/`) live here. The IRSA role, ClickHouse secret discovery, and Slack webhook lookup live in the private Terraform wrapper (`ProjectCircleIL/terraform-modules` -> `modules/extras/alert-analyzer/`), which installs the chart from here. The private wrapper keeps its own copy of the chart today; changes to chart env vars, ports, or service account permissions need a matching PR there until it consumes this chart directly.
 
 Image is published to `public.ecr.aws/j5u9j5q0/alert-analyzer` (public ECR, ProjectCircle account). No CI in this repo - builds are manual.

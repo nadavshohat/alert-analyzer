@@ -1,0 +1,60 @@
+image:
+  repository: "public.ecr.aws/j5u9j5q0/alert-analyzer"
+  tag: "latest"
+  pullPolicy: Always
+
+bedrock:
+  region: "us-west-2"
+  model: "us.anthropic.claude-sonnet-5"
+  maxTokens: 2048
+
+agent:
+  maxTurns: 10
+  pollInterval: 30
+  dedupWindow: 1800
+  logLookbackMinutes: 30
+
+events:
+  reasons: "CrashLoopBackOff,OOMKilled,BackOff,Failed,Error,Unhealthy"
+  excludeNamespaces: "kube-system,groundcover"
+
+clickhouse:
+  host: "groundcover-clickhouse"
+  port: 8123
+  user: "default"
+  database: "groundcover"
+
+groundcover:
+  baseUrl: "https://app.groundcover.com"
+  clusterName: ""
+
+timezone: "UTC"
+
+serviceAccount:
+  create: true
+  name: "alert-analyzer"
+  # For AWS IRSA, set: eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>
+  annotations: {}
+
+rbac:
+  # pods and pods/log get/list are always granted (cluster-wide, read-only) so the
+  # agent can triage crashes in any namespace. allowExec additionally grants
+  # create on pods/exec, which powers the read_file/list_dir/get_env investigation
+  # tools. It is a cluster-wide exec grant: disable it to remove that blast radius
+  # (those three tools then return "unavailable" and the agent uses logs/metrics only).
+  allowExec: true
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    memory: "512Mi"
+
+secrets:
+  # Provide the two secret values inline (they land in the release), OR set
+  # existingSecret to the name of a Secret you created yourself holding keys
+  # CLICKHOUSE_PASSWORD and SLACK_WEBHOOK_URL. existingSecret wins when set.
+  existingSecret: ""
+  clickhousePassword: ""
+  slackWebhookUrl: ""

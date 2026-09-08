@@ -1,0 +1,16 @@
+alert-analyzer is installed in namespace {{ .Release.Namespace }}.
+
+Watch it start:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "alert-analyzer.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "alert-analyzer.fullname" . }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.slackWebhookUrl }}
+
+WARNING: no Slack webhook set. Set secrets.slackWebhookUrl or secrets.existingSecret,
+otherwise findings are logged only and never posted to Slack.
+{{- end }}
+{{- end }}
+
+The pod needs AWS credentials for Bedrock. On EKS use IRSA:
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<role-arn>
