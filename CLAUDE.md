@@ -24,10 +24,11 @@ Python 3.14 (`python:3.14-slim-bookworm`). Entry point is `src/main.py` (the Doc
 
 ## Architecture
 
-Six files in `src/`, each one layer:
+Seven files in `src/`, each one layer:
 
 - `main.py` -> `AlertAnalyzer`: polling loop, dedup, transient-event filters
 - `clickhouse.py` -> `ClickhouseClient`: HTTP queries against Groundcover's `events`, `logs`, `traces`, `infra_measurements` tables
+- `classifier.py` -> `classify()`: deterministic first-pass triage. Diagnoses the failure classes whose cause is complete in pod status (image-pull, eviction, config-error) with no LLM call; returns `None` for everything else so the agent investigates
 - `agent.py` -> `AgentAnalyzer`: Bedrock Converse API tool-use loop (max 20 turns)
 - `tools.py` -> `ToolHandler`: implementations of the tools the agent can call
 - `notifier.py` -> `SlackNotifier`: mrkdwn formatting + Groundcover deep link
@@ -36,9 +37,10 @@ Six files in `src/`, each one layer:
 Data flow per event:
 ```
 ClickHouse events table -> CrashEvent -> dedup -> 30s wait -> _is_pod_healthy check
+  -> classify() (deterministic verdict for unambiguous classes, no LLM) OR
   -> AgentAnalyzer.analyze() (Bedrock Converse with toolConfig, looped until end_turn)
   -> Analysis (parsed from strict SUMMARY/ROOT_CAUSE/CONFIDENCE/STATUS/RECOMMENDATIONS text)
-  -> SlackNotifier.send() (skipped if STATUS=resolved)
+  -> _is_pod_healthy recheck -> SlackNotifier.send() (skipped if STATUS=resolved)
 ```
 
 ### Agent loop (the load-bearing part)

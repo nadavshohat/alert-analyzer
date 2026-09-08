@@ -367,7 +367,8 @@ def test_model_resolved_does_not_suppress_unhealthy_pod():
                                   raw_response="", resolved=True, confidence="low")
     class FakeNotifier:
         def send(self, ev, an): sent["called"] = True; return True
-    a.agent = FakeAgent(); a.notifier = FakeNotifier(); a.k8s_tools = None
+    a.agent = FakeAgent(); a.notifier = FakeNotifier()
+    a.k8s_tools = types.SimpleNamespace(k8s_api=None)  # classify -> None -> escalate to agent
     ev = clickhouse.CrashEvent(datetime.now(timezone.utc), "ns", "wl", "pod", "OOMKilled", "m")
     a.process_event(ev)
     assert sent["called"] is True  # resolved=True did not suppress an unhealthy pod

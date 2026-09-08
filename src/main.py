@@ -9,6 +9,7 @@ from typing import Dict, Optional
 from config import config
 from clickhouse import ClickhouseClient, CrashEvent, BackendError
 from agent import AgentAnalyzer
+from classifier import classify
 from notifier import SlackNotifier
 from tools import ToolHandler
 
@@ -123,14 +124,22 @@ class AlertAnalyzer:
             logger.info(f"Skipping {event.namespace}/{event.workload} - transient (pod healthy/succeeded/gone after {grace}s)")
             return
 
-        # Agent investigates autonomously using tools
-        analysis = self.agent.analyze(event)
-        logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
+        # Deterministic first pass: unambiguous classes (OOMKilled, image pull,
+        # eviction, config error) are diagnosed from pod status with no LLM call.
+        analysis = classify(event, self.k8s_tools.k8s_api)
+        if analysis is not None:
+            logger.info(f"Deterministic verdict for {event.namespace}/{event.workload}: {analysis.summary}")
+        else:
+            # Residual: cause is in the logs. Let the agent investigate.
+            analysis = self.agent.analyze(event)
+            logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
 
-        # Post-analysis recheck: pod may have recovered while the agent was investigating
-        # (typical agent run is 1-2 min, enough time for image pulls to succeed on retry).
+        # Pre-send recheck for BOTH paths: a pod can recover or vanish between diagnosis
+        # and delivery (an image pull succeeds on the next kubelet retry, a job pod exits,
+        # the agent spends 1-2 min investigating). Only these deterministic rechecks may
+        # silence an alert.
         if self._is_pod_healthy(event):
-            logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
+            logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered/gone before send (transient)")
             return
 
         # NOTE: the model's `resolved` verdict is deliberately NOT a suppressor. Only
