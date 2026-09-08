@@ -9,6 +9,7 @@ from typing import Dict, Optional
 from config import config
 from clickhouse import ClickhouseClient, CrashEvent, BackendError
 from agent import AgentAnalyzer
+from classifier import classify
 from notifier import SlackNotifier
 from tools import ToolHandler
 
@@ -123,15 +124,22 @@ class AlertAnalyzer:
             logger.info(f"Skipping {event.namespace}/{event.workload} - transient (pod healthy/succeeded/gone after {grace}s)")
             return
 
-        # Agent investigates autonomously using tools
-        analysis = self.agent.analyze(event)
-        logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
+        # Deterministic first pass: unambiguous classes (OOMKilled, image pull,
+        # eviction, config error) are diagnosed from pod status with no LLM call.
+        analysis = classify(event, self.k8s_tools.k8s_api)
+        if analysis is not None:
+            logger.info(f"Deterministic verdict for {event.namespace}/{event.workload}: {analysis.summary}")
+        else:
+            # Residual: cause is in the logs. Let the agent investigate.
+            analysis = self.agent.analyze(event)
+            logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
 
-        # Post-analysis recheck: pod may have recovered while the agent was investigating
-        # (typical agent run is 1-2 min, enough time for image pulls to succeed on retry).
-        if self._is_pod_healthy(event):
-            logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
-            return
+            # Post-analysis recheck: pod may have recovered while the agent was
+            # investigating (a typical agent run is 1-2 min, enough time for e.g.
+            # an image pull to succeed on retry). Only the model path waits.
+            if self._is_pod_healthy(event):
+                logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
+                return
 
         # NOTE: the model's `resolved` verdict is deliberately NOT a suppressor. Only
         # the deterministic _is_pod_healthy rechecks above can silence an alert, so
