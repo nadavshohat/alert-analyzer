@@ -13,6 +13,24 @@ class Config:
     clickhouse_password: str = field(default_factory=lambda: os.environ.get('CLICKHOUSE_PASSWORD', ''))
     clickhouse_database: str = field(default_factory=lambda: os.environ.get('CLICKHOUSE_DATABASE', 'groundcover'))
 
+    # Telemetry source selection. Each signal is chosen independently so a stack
+    # can mix backends (e.g. Kubernetes events + Loki logs + Prometheus metrics).
+    # Defaults are all-clickhouse (Groundcover), so existing deployments are unchanged.
+    #   EVENT_SOURCE  : clickhouse | kubernetes
+    #   LOG_SOURCE    : clickhouse | kubernetes | loki
+    #   METRIC_SOURCE : clickhouse | kubernetes | prometheus
+    #   TRACE_SOURCE  : clickhouse | none   (only clickhouse/Groundcover has traces)
+    event_source: str = field(default_factory=lambda: os.environ.get('EVENT_SOURCE', 'clickhouse').strip().lower())
+    log_source: str = field(default_factory=lambda: os.environ.get('LOG_SOURCE', 'clickhouse').strip().lower())
+    metric_source: str = field(default_factory=lambda: os.environ.get('METRIC_SOURCE', 'clickhouse').strip().lower())
+    trace_source: str = field(default_factory=lambda: os.environ.get('TRACE_SOURCE', 'clickhouse').strip().lower())
+
+    # Loki (LOG_SOURCE=loki). LOKI_TENANT sets X-Scope-OrgID for multi-tenant Loki.
+    loki_url: str = field(default_factory=lambda: os.environ.get('LOKI_URL', '').rstrip('/'))
+    loki_tenant: str = field(default_factory=lambda: os.environ.get('LOKI_TENANT', ''))
+    # Prometheus (METRIC_SOURCE=prometheus).
+    prometheus_url: str = field(default_factory=lambda: os.environ.get('PROMETHEUS_URL', '').rstrip('/'))
+
     # Polling
     poll_interval_seconds: int = field(default_factory=lambda: int(os.environ.get('POLL_INTERVAL_SECONDS', '30')))
     dedup_window_seconds: int = field(default_factory=lambda: int(os.environ.get('DEDUP_WINDOW_SECONDS', '300')))

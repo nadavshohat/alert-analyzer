@@ -148,7 +148,7 @@ def test_minutes_is_coerced_and_bounded():
             return []
 
     h = tools_mod.ToolHandler()
-    h.clickhouse = FakeCH()
+    h.log_source = FakeCH()
     h._get_logs({"namespace": "n", "workload": "w", "minutes": "999999"})
     assert captured["minutes"] == 1440  # bounded int, not a raw string
     assert isinstance(captured["minutes"], int)
@@ -216,7 +216,7 @@ def test_watermark_advances_on_empty_success():
     class FakeCH:
         def get_crash_events(self, since_timestamp=None):
             return []
-    a.clickhouse = FakeCH()
+    a.event_source = FakeCH()
     a._cleanup_seen_events = lambda: None
     a.poll()
     assert a.last_poll_time is not None
@@ -230,7 +230,7 @@ def test_watermark_holds_on_backend_error():
     class FakeCH:
         def get_crash_events(self, since_timestamp=None):
             raise clickhouse.BackendError("clickhouse down")
-    a.clickhouse = FakeCH()
+    a.event_source = FakeCH()
     a._cleanup_seen_events = lambda: None
     a.poll()
     assert a.last_poll_time is None  # held
@@ -245,7 +245,7 @@ def test_logs_backend_error_is_not_reported_as_no_data(monkeypatch):
         def get_logs_for_pod(self, ns, pod, minutes):
             raise clickhouse.BackendError("clickhouse down")
     h = tools_mod.ToolHandler()
-    h.clickhouse = FakeCH()
+    h.log_source = FakeCH()
     out = h._get_logs({"namespace": "n", "workload": "w", "minutes": 30})
     assert "unavailable" in out.lower()
     assert "no logs found" not in out.lower()

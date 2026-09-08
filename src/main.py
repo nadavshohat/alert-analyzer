@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from config import config
-from clickhouse import ClickhouseClient, CrashEvent, BackendError
+from clickhouse import CrashEvent, BackendError
+from backends import build_event_source
 from agent import AgentAnalyzer
 from classifier import classify
 from notifier import SlackNotifier
@@ -32,7 +33,7 @@ class AlertAnalyzer:
     """Main orchestrator for crash detection and analysis."""
 
     def __init__(self):
-        self.clickhouse = ClickhouseClient()
+        self.event_source = build_event_source()
         self.agent = AgentAnalyzer()
         self.notifier = SlackNotifier()
         self.k8s_tools = ToolHandler()
@@ -159,7 +160,7 @@ class AlertAnalyzer:
         """Poll for new crash events and process them."""
         try:
             poll_start = datetime.now(timezone.utc)
-            events = self.clickhouse.get_crash_events(since_timestamp=self.last_poll_time)
+            events = self.event_source.get_crash_events(since_timestamp=self.last_poll_time)
             self.last_poll_time = poll_start  # only reached if the read succeeded
 
             for event in events:

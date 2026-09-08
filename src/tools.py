@@ -5,7 +5,8 @@ import time
 from typing import List
 
 from config import config
-from clickhouse import ClickhouseClient, LogEntry, MetricsSummary, BackendError
+from clickhouse import LogEntry, MetricsSummary, BackendError
+from backends import build_log_source, build_metric_source, build_trace_source
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,9 @@ class ToolHandler:
     """Executes investigation tools: logs, traces, pod reads."""
 
     def __init__(self):
-        self.clickhouse = ClickhouseClient()
+        self.log_source = build_log_source()
+        self.metric_source = build_metric_source()
+        self.trace_source = build_trace_source()
         self._k8s_api = None
         # Namespace of the event under investigation. Set per-investigation so a
         # tool call (or injected text steering one) cannot read from or exec into
@@ -117,9 +120,9 @@ class ToolHandler:
         try:
             logs: List[LogEntry] = []
             if workload:
-                logs = self.clickhouse.get_logs_for_workload(namespace, workload, minutes)
+                logs = self.log_source.get_logs_for_workload(namespace, workload, minutes)
             if not logs and pod_name:
-                logs = self.clickhouse.get_logs_for_pod(namespace, pod_name, minutes)
+                logs = self.log_source.get_logs_for_pod(namespace, pod_name, minutes)
         except BackendError:
             return "Telemetry backend unavailable - could not fetch logs (this is NOT evidence that the workload produced no logs)."
 
@@ -141,7 +144,7 @@ class ToolHandler:
         namespace = self._ns(params)
         workload = params["workload"]
         try:
-            traces = self.clickhouse.get_slow_traces(namespace, workload)
+            traces = self.trace_source.get_slow_traces(namespace, workload)
         except BackendError:
             return "Telemetry backend unavailable - could not fetch traces."
 
@@ -165,7 +168,7 @@ class ToolHandler:
         minutes = _coerce_minutes(params.get("minutes"), 15)
 
         try:
-            summary: MetricsSummary | None = self.clickhouse.get_metrics_for_pod(namespace, pod_name, minutes)
+            summary: MetricsSummary | None = self.metric_source.get_metrics_for_pod(namespace, pod_name, minutes)
         except BackendError:
             return "Telemetry backend unavailable - could not fetch metrics (this is NOT evidence against OOM)."
         if not summary:
