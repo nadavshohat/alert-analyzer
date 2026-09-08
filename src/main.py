@@ -134,12 +134,13 @@ class AlertAnalyzer:
             analysis = self.agent.analyze(event)
             logger.info(f"Analysis complete ({analysis.tool_calls_made} tool calls): {analysis.summary[:100]}...")
 
-            # Post-analysis recheck: pod may have recovered while the agent was
-            # investigating (a typical agent run is 1-2 min, enough time for e.g.
-            # an image pull to succeed on retry). Only the model path waits.
-            if self._is_pod_healthy(event):
-                logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
-                return
+        # Pre-send recheck for BOTH paths: a pod can recover or vanish between diagnosis
+        # and delivery (an image pull succeeds on the next kubelet retry, a job pod exits,
+        # the agent spends 1-2 min investigating). Only these deterministic rechecks may
+        # silence an alert.
+        if self._is_pod_healthy(event):
+            logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered/gone before send (transient)")
+            return
 
         # NOTE: the model's `resolved` verdict is deliberately NOT a suppressor. Only
         # the deterministic _is_pod_healthy rechecks above can silence an alert, so

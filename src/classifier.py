@@ -19,7 +19,10 @@ from agent import Analysis
 logger = logging.getLogger(__name__)
 
 _IMAGE_PULL = {"ImagePullBackOff", "ErrImagePull", "InvalidImageName", "ErrImageNeverPull"}
-_CONFIG_ERR = {"CreateContainerConfigError", "CreateContainerError"}
+# Only CreateContainerConfigError is unambiguous (an unresolvable ConfigMap/Secret
+# reference). CreateContainerError is a generic creation failure whose cause is not
+# in pod status, so it escalates to the agent.
+_CONFIG_ERR = {"CreateContainerConfigError"}
 
 
 def _verdict(summary: str, root_cause: str, recommendation: str) -> Analysis:

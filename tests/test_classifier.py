@@ -88,6 +88,12 @@ def test_crashloop_oom_laststate_escalates_to_model():
     assert classifier.classify(EV, _api(pod)) is None
 
 
+def test_generic_create_container_error_escalates():
+    """CreateContainerError is a generic creation failure, not a ConfigMap/Secret ref -> agent."""
+    pod = _pod(container_statuses=[_cs(waiting={"reason": "CreateContainerError", "message": "oci runtime"})])
+    assert classifier.classify(EV, _api(pod)) is None
+
+
 def test_plain_error_exit1_escalates():
     pod = _pod(container_statuses=[_cs(last_terminated=_term("Error", 1, NOW))])
     assert classifier.classify(EV, _api(pod)) is None
@@ -143,3 +149,25 @@ def test_residual_calls_the_model():
     a.agent = Agent(); a.notifier = Notifier()
     a.process_event(EV)
     assert called["analyze"] is True and called["sent"] is True
+
+
+def test_deterministic_verdict_suppressed_when_pod_recovers():
+    """A deterministic verdict must still pass the pre-send health recheck (fails before fix)."""
+    a = _analyzer()
+    # False at the top pre-check (so we reach classify), True at the pre-send recheck
+    # (pod recovered between diagnosis and delivery).
+    calls = {"n": 0}
+    def health(ev):
+        calls["n"] += 1
+        return calls["n"] > 1
+    a._is_pod_healthy = health
+    pod = _pod(container_statuses=[_cs(waiting={"reason": "ImagePullBackOff", "message": "no"})])
+    a.k8s_tools = types.SimpleNamespace(k8s_api=_api(pod))
+    called = {"analyze": False, "sent": False}
+    class Agent:
+        def analyze(self, ev): called["analyze"] = True; raise AssertionError("model must not run")
+    class Notifier:
+        def send(self, ev, an): called["sent"] = True; return True
+    a.agent = Agent(); a.notifier = Notifier()
+    a.process_event(EV)
+    assert called["sent"] is False and called["analyze"] is False
