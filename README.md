@@ -11,8 +11,8 @@ Groundcover ClickHouse (events, logs, traces)
          │
          ▼
   Alert Analyzer Pod
-  1. Poll events → 2. Fetch logs/traces → 3. Exec into pod
-  4. Web search  → 5. Claude analysis   → 6. Slack alert
+   1. Poll events -> 2. Fetch logs/traces -> 3. Read files/env from pod
+   4. Claude analysis -> 5. Slack alert
          │                                      │
          ▼                                      ▼
    AWS Bedrock (Claude)                    Slack Webhook
@@ -22,8 +22,7 @@ Groundcover ClickHouse (events, logs, traces)
 
 - **Crash Detection**: Polls ClickHouse for CrashLoopBackOff, OOMKilled, Unhealthy, etc.
 - **Log + Trace Analysis**: Fetches container logs and slow traces for context
-- **Pod Inspection**: Reads source code, config files, cgroup limits from crashing pods
-- **Web Research**: Searches DuckDuckGo for unfamiliar errors
+- **Pod Inspection**: Reads files, lists directories, and views (secret-redacted) env vars in the crashing pod via typed, read-only operations scoped to the alert's namespace
 - **AI Analysis**: Claude determines root cause with confidence level
 - **Slack Notifications**: mrkdwn formatted alerts with Groundcover deep links
 
@@ -34,7 +33,7 @@ Groundcover ClickHouse (events, logs, traces)
 │   ├── main.py          # Entry point, polling loop
 │   ├── config.py         # Configuration (env vars)
 │   ├── agent.py          # Bedrock Converse agentic loop
-│   ├── tools.py          # Tool handlers (logs, traces, exec, web search)
+│   ├── tools.py          # Tool handlers (logs, traces, pod reads)
 │   ├── clickhouse.py     # ClickHouse queries
 │   └── notifier.py       # Slack formatting
 ├── Dockerfile            # Multi-stage build
@@ -61,7 +60,10 @@ All configuration via environment variables (set in Helm values or ConfigMap):
 | `BEDROCK_MODEL` | `us.anthropic.claude-opus-4-6-v1` | Claude model ID |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook (secret) |
 | `CLUSTER_NAME` | - | Kubernetes cluster name |
-| `TZ` | `Asia/Jerusalem` | Timezone for Slack timestamps |
+| `TZ` | `UTC` | Timezone for Slack timestamps (invalid value falls back to UTC) |
+| `BEDROCK_MAX_TOKENS` | `2048` | Max output tokens per Bedrock call |
+| `MAX_AGENT_TURNS` | `20` | Max investigation steps before forced summary |
+| `UNHEALTHY_SKIP_NAMESPACES` | `kube-system,groundcover,...` | Namespaces whose Unhealthy events are skipped |
 
 ## Deployment
 
@@ -100,6 +102,21 @@ docker build --platform linux/amd64 -t public.ecr.aws/j5u9j5q0/alert-analyzer:la
 docker push public.ecr.aws/j5u9j5q0/alert-analyzer:latest
 ```
 
+## Development
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt pytest
+PYTHONPATH=src pytest tests/ -q
+```
+
+## Security
+
+- Pod access is read-only and typed (`read_file` / `list_dir` / `get_env`); there is no arbitrary command execution. All pod access is scoped to the namespace of the alert under investigation.
+- Env var values whose key name looks like a secret are redacted on a best-effort basis; this is not a security boundary, so the deployment RBAC should not mount secrets the analyzer does not need.
+- Requires a namespaced RBAC Role granting `get,list` on `pods`/`pods/log` and `get,create` on `pods/exec`.
+
 ## License
 
 MIT
+

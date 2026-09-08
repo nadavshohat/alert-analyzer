@@ -1,5 +1,6 @@
 """Agentic analyzer using Bedrock Converse API with tool use."""
 import json
+import re
 import logging
 from dataclasses import dataclass
 from typing import List
@@ -19,16 +20,16 @@ You have tools to investigate. Use them strategically:
 2. Use describe_pod to check the pod's current state, restart count, last termination reason (OOMKilled, Error, etc.), and resource limits. The TERMINATION SUMMARY at the top of describe_pod output is the FIRST place to look — it tells you why the previous container died (OOMKilled vs Error vs nothing).
 3. For ANY Unhealthy / probe failure / restart event: call get_metrics next, BEFORE analyzing code. Probe failures are usually a SYMPTOM (the kernel killed the process for OOM, the TCP socket is gone, probe gets connection refused). Code analysis without metrics = pattern-matching = hallucination.
 4. If describe_pod shows a non-zero Error exit (or restarts) and get_logs returned nothing, call get_previous_logs. A startup panic or crash-loop message lives in the PREVIOUS (crashed) container instance, not the current one, and get_logs (observability platform) usually misses it. This is the single most important step for a crash with empty logs - do not skip it.
-5. If you need more context, exec into the pod to read source code, config files, or environment variables
-6. If logs show specific errors you don't recognize, search the web for BACKGROUND ONLY
+5. If you need more context, use read_file / list_dir / get_env to read source, config, or environment variables from the pod
+6. Base your conclusion only on evidence from the pod's logs, metrics, traces and state
 6. If the issue might be latency-related (health check timeouts, slow responses), check traces
 
 Important investigation guidelines:
 - Be efficient - use the minimum number of tool calls needed
-- For OOMKilled: this could be a code issue (memory leak) OR the memory limit is simply too low for the workload. Check BOTH possibilities. Try to exec and read the source code to verify.
-- If exec fails (pod restarting), retry once - there may be a brief window when the container is up
-- Be TRANSPARENT: if you could not exec into the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
-- NEVER derive a ROOT_CAUSE from search_web results alone. Web search is background context, not evidence. If get_logs AND get_previous_logs are both empty and you could not exec into the pod, you do NOT have the evidence to name a cause: set CONFIDENCE: low, STATUS per the pod's current health, and state the investigation is inconclusive pending previous-container logs. A web-matched pattern reported as the root cause is worse than an honest "inconclusive".
+- For OOMKilled: this could be a code issue (memory leak) OR the memory limit is simply too low for the workload. Check BOTH possibilities. Use read_file to read the source code and verify.
+- If a pod read fails (pod restarting), retry once - there may be a brief window when the container is up
+- Be TRANSPARENT: if you could not read from the pod or verify something, say so explicitly in your analysis. Do not present guesses as confirmed findings.
+- If get_logs AND get_previous_logs are both empty and you could not read from the pod, you do NOT have the evidence to name a cause: set CONFIDENCE: low, STATUS per the pod's current health, and state the investigation is inconclusive pending previous-container logs. An honest "inconclusive" is better than a guessed root cause.
 - For Unhealthy (readiness/liveness probe failures): ALWAYS use describe_pod to check the probe configuration (timeoutSeconds, periodSeconds, failureThreshold). A very low timeoutSeconds (e.g. 1s) is often the root cause — any minor delay will trigger a failure. Report the actual probe timeout in your analysis.
 - ALWAYS use get_metrics for probe failures and restarts. If memory_max_mb >= 90% of the container's memory limit just before the event, the cause is OOMKilled and the probe failure is downstream of the kill — recommend bumping memory limit or finding the leak, NOT framework/concurrency changes.
 - Code patterns (run_in_executor, ThreadPool, async/await) are HYPOTHESES, not evidence. Do NOT conclude "GIL contention", "event loop starvation", or "thread blocking" without quantitative evidence: a trace duration exceeding the probe's timeoutSeconds, OR sustained CPU at the container's CPU limit, OR explicit profiling output. Pattern-matching on code without metrics is unsupported speculation.
@@ -108,17 +109,50 @@ TOOL_DEFINITIONS = [
     },
     {
         "toolSpec": {
-            "name": "exec_in_pod",
-            "description": "Execute a read-only command inside a running pod. Use to inspect files, check config, list directories, or view environment variables. Secrets are filtered from printenv output. The pod may be restarting so this can fail.",
+            "name": "read_file",
+            "description": "Read a file inside a running pod (e.g. source, config). Read-only. The pod may be restarting, so this can fail.",
             "inputSchema": {
                 "json": {
                     "type": "object",
                     "properties": {
                         "namespace": {"type": "string", "description": "Kubernetes namespace"},
-                        "pod_name": {"type": "string", "description": "Pod name to exec into"},
-                        "command": {"type": "string", "description": "Command to run (read-only, e.g. 'cat /app/package.json')"}
+                        "pod_name": {"type": "string", "description": "Pod name"},
+                        "path": {"type": "string", "description": "Absolute file path, e.g. /app/package.json"}
                     },
-                    "required": ["namespace", "pod_name", "command"]
+                    "required": ["namespace", "pod_name", "path"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "list_dir",
+            "description": "List a directory inside a running pod. Read-only.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Kubernetes namespace"},
+                        "pod_name": {"type": "string", "description": "Pod name"},
+                        "path": {"type": "string", "description": "Absolute directory path, e.g. /app"}
+                    },
+                    "required": ["namespace", "pod_name", "path"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_env",
+            "description": "View environment variables inside a running pod. Read-only. Values whose key name looks like a secret are hidden on a best-effort basis; do not rely on this to keep secrets out of your context.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Kubernetes namespace"},
+                        "pod_name": {"type": "string", "description": "Pod name"}
+                    },
+                    "required": ["namespace", "pod_name"]
                 }
             }
         }
@@ -162,21 +196,6 @@ TOOL_DEFINITIONS = [
                 }
             }
         }
-    },
-    {
-        "toolSpec": {
-            "name": "search_web",
-            "description": "Search the web for error solutions, documentation, or best practices. Use specific error messages combined with the technology name for best results.",
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query (e.g. 'nodejs ECONNREFUSED redis kubernetes')"}
-                    },
-                    "required": ["query"]
-                }
-            }
-        }
     }
 ]
 
@@ -206,6 +225,8 @@ class AgentAnalyzer:
 
     def analyze(self, event) -> Analysis:
         """Run an agentic investigation of a crash event."""
+        # Scope every tool call to the event's namespace for this investigation.
+        self.tools.investigation_namespace = event.namespace
         system = [{"text": SYSTEM_PROMPT}]
         tool_config = {"tools": TOOL_DEFINITIONS}
 
@@ -241,7 +262,8 @@ class AgentAnalyzer:
                     root_cause="Bedrock API error",
                     recommendations=["Check Bedrock connectivity and IAM permissions"],
                     raw_response=str(e),
-                    tool_calls_made=tool_calls_made
+                    tool_calls_made=tool_calls_made,
+                    confidence="low"
                 )
 
             assistant_msg = response["output"]["message"]
@@ -293,12 +315,15 @@ class AgentAnalyzer:
             else:
                 logger.warning(f"Unexpected stop reason: {stop_reason}")
                 raw_text = self._extract_text(assistant_msg)
+                note = ("Analysis truncated (max_tokens) — raise BEDROCK_MAX_TOKENS"
+                        if stop_reason == "max_tokens" else "Analysis interrupted")
                 return Analysis(
-                    summary=raw_text[:200],
-                    root_cause="Analysis interrupted",
+                    summary=raw_text[:200] or note,
+                    root_cause=note,
                     recommendations=["Review logs manually"],
                     raw_response=raw_text,
-                    tool_calls_made=tool_calls_made
+                    tool_calls_made=tool_calls_made,
+                    confidence="low"
                 )
 
         logger.warning(f"Agent hit max turns ({config.max_agent_turns}), requesting summary")
@@ -309,6 +334,8 @@ class AgentAnalyzer:
                 "provide your best analysis using the required format (SUMMARY, ROOT_CAUSE, CONFIDENCE, STATUS, RECOMMENDATIONS). "
                 "Be honest about what you found vs what you couldn't verify. Do NOT say 'inconclusive' — share what you actually learned."
             }]})
+            # toolConfig must stay: Converse requires it whenever the message
+            # history already contains toolUse/toolResult blocks (always true here).
             response = self.bedrock.converse(
                 modelId=config.bedrock_model,
                 messages=messages,
@@ -348,6 +375,9 @@ class AgentAnalyzer:
         resolved = False
         recommendations = []
 
+        if not response.strip():
+            confidence = "low"
+
         lines = response.strip().split('\n')
         current_section = None
 
@@ -367,12 +397,12 @@ class AgentAnalyzer:
                 current_section = 'confidence'
             elif line.upper().startswith('STATUS:'):
                 val = line[7:].strip().lower()
-                resolved = val == 'resolved'
+                resolved = val.startswith('resolved')
                 current_section = 'status'
             elif line.upper().startswith('RECOMMENDATION'):
                 current_section = 'recommendations'
-            elif current_section == 'recommendations' and line.startswith('-'):
-                recommendations.append(line[1:].strip())
+            elif current_section == 'recommendations' and re.match(r'^([-*\u2022]|\d+[.)])\s+', line):
+                recommendations.append(re.sub(r'^([-*\u2022]|\d+[.)])\s+', '', line).strip())
             elif current_section == 'root_cause' and line and not line.upper().startswith(('RECOMMENDATION', 'CONFIDENCE', 'STATUS')):
                 root_cause += ' ' + line if root_cause else line
 

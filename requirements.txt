@@ -1,5 +1,7 @@
-boto3>=1.34.0
-requests>=2.31.0
-pytz>=2024.1
-ddgs>=7.0.0
-kubernetes>=29.0.0
+# Pinned to tested minors for reproducible builds. Upper bounds are deliberate:
+# kubernetes 37.x is a breaking Pydantic rewrite, and unpinned floors resolve to
+# whatever is newest at build time.
+boto3~=1.43.0
+requests~=2.34.0        # >=2.34 clears CVE-2024-35195/47081 and CVE-2026-25645
+kubernetes~=36.0.0      # <37: 37.x is a breaking rewrite
+tzdata~=2026.3          # data for stdlib zoneinfo (replaces pytz)

@@ -1,5 +1,5 @@
 # Build stage: install dependencies into a venv
-FROM python:3.14-slim-bookworm AS builder
+FROM python:3.14-slim-trixie AS builder
 
 WORKDIR /build
 RUN python -m venv /opt/venv
@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --no-compile --prefer-binary -r requirements.txt
 
 # Runtime stage: copy only the venv + source (no pip/setuptools/wheel)
-FROM python:3.14-slim-bookworm
+FROM python:3.14-slim-trixie
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
