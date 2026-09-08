@@ -1,0 +1,11 @@
+{
+  "name": "liveness-db-pool-exhausted",
+  "event": {"reason": "Unhealthy", "namespace": "team-d", "workload": "web", "pod_name": "web-1", "message": "Liveness probe failed"},
+  "tool_calls": [
+    {"name": "describe_pod", "input": {"namespace": "team-d", "pod_name": "web-1"},
+     "result": "container web: ready=false restartCount=2\nLiveness probe failed: HTTP probe returned statusCode=500"},
+    {"name": "get_logs", "input": {"namespace": "team-d", "workload": "web"},
+     "result": "[ERROR] database connection pool exhausted (max=20, in use=20); /healthz returning 500\n[ERROR] could not acquire connection within 5s"}
+  ],
+  "expected": {"root_cause_contains": ["connection pool", "database", "pool"], "must_not_resolve": true}
+}

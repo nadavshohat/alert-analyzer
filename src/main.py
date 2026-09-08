@@ -133,10 +133,11 @@ class AlertAnalyzer:
             logger.info(f"Skipping {event.namespace}/{event.workload} - pod recovered during analysis (transient)")
             return
 
-        # Skip auto-resolved — no need to notify on transient issues
-        if analysis.resolved:
-            logger.info(f"Skipping notification for {event.namespace}/{event.workload} - auto-resolved")
-            return
+        # NOTE: the model's `resolved` verdict is deliberately NOT a suppressor. Only
+        # the deterministic _is_pod_healthy rechecks above can silence an alert, so
+        # untrusted text injected into the model (e.g. a planted "STATUS: resolved"
+        # in a pod log) cannot turn off alerting. `resolved` rides along on the
+        # Analysis for display only.
 
         # Send to Slack
         success = self.notifier.send(event, analysis)

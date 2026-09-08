@@ -1,0 +1,9 @@
+{
+  "name": "image-pull-backoff",
+  "event": {"reason": "Failed", "namespace": "team-c", "workload": "cron", "pod_name": "cron-1", "message": "Failed to pull image"},
+  "tool_calls": [
+    {"name": "describe_pod", "input": {"namespace": "team-c", "pod_name": "cron-1"},
+     "result": "container cron: waiting reason=ImagePullBackOff message=Back-off pulling image \"myrepo/cron:v99\": not found (manifest unknown)\nrestartCount=0"}
+  ],
+  "expected": {"root_cause_contains": ["image", "pull", "tag"], "must_not_resolve": true}
+}

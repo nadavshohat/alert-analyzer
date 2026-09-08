@@ -215,13 +215,13 @@ class Analysis:
 class AgentAnalyzer:
     """Agentic crash analyzer using Bedrock Converse API with tool use."""
 
-    def __init__(self):
+    def __init__(self, tools=None):
         boto_config = BotoConfig(
             region_name=config.bedrock_region,
             retries={'max_attempts': 10, 'mode': 'adaptive'}
         )
         self.bedrock = boto3.client('bedrock-runtime', config=boto_config)
-        self.tools = ToolHandler()
+        self.tools = tools or ToolHandler()
 
     def analyze(self, event) -> Analysis:
         """Run an agentic investigation of a crash event."""
@@ -242,6 +242,7 @@ class AgentAnalyzer:
 
         messages = [{"role": "user", "content": [{"text": initial_prompt}]}]
         tool_calls_made = 0
+        evidence = []  # tool outputs gathered, fed to the no-tools summariser
 
         for turn in range(config.max_agent_turns):
             try:
@@ -250,10 +251,7 @@ class AgentAnalyzer:
                     messages=messages,
                     system=system,
                     toolConfig=tool_config,
-                    inferenceConfig={
-                        "maxTokens": config.bedrock_max_tokens,
-                        "temperature": 0.2
-                    }
+                    inferenceConfig={"maxTokens": config.bedrock_max_tokens}
                 )
             except Exception as e:
                 logger.error(f"Bedrock converse failed on turn {turn}: {e}")
@@ -271,11 +269,8 @@ class AgentAnalyzer:
             stop_reason = response["stopReason"]
 
             if stop_reason == "end_turn":
-                raw_text = self._extract_text(assistant_msg)
-                logger.info(f"Agent finished after {tool_calls_made} tool calls")
-                analysis = self._parse_response(raw_text)
-                analysis.tool_calls_made = tool_calls_made
-                return analysis
+                logger.info(f"Agent finished gathering after {tool_calls_made} tool calls")
+                return self._summarize_no_tools(event, evidence, tool_calls_made)
 
             elif stop_reason == "tool_use":
                 tool_results = []
@@ -293,6 +288,7 @@ class AgentAnalyzer:
                             logger.info(f"Tool result #{tool_calls_made} ({tool_name}): {result[:300]}")
                             if len(result) > 20000:
                                 result = result[:20000] + "\n... (truncated)"
+                            evidence.append(f"[{tool_name}] {result}")
                             tool_results.append({
                                 "toolResult": {
                                     "toolUseId": tool["toolUseId"],
@@ -302,6 +298,7 @@ class AgentAnalyzer:
                             })
                         except Exception as e:
                             logger.warning(f"Tool {tool_name} failed: {e}")
+                            evidence.append(f"[{tool_name}] Error: {e}")
                             tool_results.append({
                                 "toolResult": {
                                     "toolUseId": tool["toolUseId"],
@@ -326,36 +323,53 @@ class AgentAnalyzer:
                     confidence="low"
                 )
 
-        logger.warning(f"Agent hit max turns ({config.max_agent_turns}), requesting summary")
-        # Ask the model to summarize what it found so far (no tools)
+        logger.warning(f"Agent hit max turns ({config.max_agent_turns}); summarizing from evidence")
+        return self._summarize_no_tools(event, evidence, tool_calls_made)
+
+    def _summarize_no_tools(self, event, evidence, tool_calls_made) -> "Analysis":
+        """Produce the final verdict in a FRESH, no-tools context.
+
+        The gathered evidence contains untrusted text (pod logs). Summarizing it with
+        a model that has NO tools means injected content cannot trigger a tool action
+        while the verdict is written. A fresh message list is required: Converse
+        rejects a call without toolConfig whose history already holds toolUse/
+        toolResult blocks (that was a real regression), so we do not reuse the loop's
+        messages."""
+        evidence_text = "\n\n".join(evidence) if evidence else "(no tool evidence was gathered)"
+        prompt = (
+            f"Crash event under investigation:\n"
+            f"- Reason: {event.reason}\n"
+            f"- Namespace: {event.namespace}\n"
+            f"- Workload: {event.workload}\n"
+            f"- Pod: {event.pod_name}\n"
+            f"- Message: {event.message}\n\n"
+            f"Evidence gathered by the investigation tools:\n{evidence_text}\n\n"
+            f"Based ONLY on the evidence above, give your verdict in the required format "
+            f"(SUMMARY, ROOT_CAUSE, CONFIDENCE, STATUS, RECOMMENDATIONS)."
+        )
         try:
-            messages.append({"role": "user", "content": [{"text":
-                "You've run out of investigation steps. Based on everything you've gathered so far, "
-                "provide your best analysis using the required format (SUMMARY, ROOT_CAUSE, CONFIDENCE, STATUS, RECOMMENDATIONS). "
-                "Be honest about what you found vs what you couldn't verify. Do NOT say 'inconclusive' — share what you actually learned."
-            }]})
-            # toolConfig must stay: Converse requires it whenever the message
-            # history already contains toolUse/toolResult blocks (always true here).
             response = self.bedrock.converse(
                 modelId=config.bedrock_model,
-                messages=messages,
-                system=system,
-                toolConfig=tool_config,
-                inferenceConfig={"maxTokens": config.bedrock_max_tokens, "temperature": 0.2}
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                system=[{"text": SYSTEM_PROMPT}],
+                inferenceConfig={"maxTokens": config.bedrock_max_tokens},
             )
             raw_text = self._extract_text(response["output"]["message"])
             analysis = self._parse_response(raw_text)
             analysis.tool_calls_made = tool_calls_made
+            if response.get("stopReason") == "max_tokens":
+                # Verdict was truncated; do not present it as a confident conclusion.
+                analysis.confidence = "low"
             return analysis
         except Exception as e:
-            logger.error(f"Failed to get summary after max turns: {e}")
+            logger.error(f"Verdict summarization failed: {e}")
             return Analysis(
-                summary="Investigation inconclusive — could not determine root cause",
-                root_cause="Complex issue requiring manual review. The automated investigation gathered data but could not reach a definitive conclusion.",
-                recommendations=["Review logs and traces manually in Groundcover"],
-                raw_response="Investigation inconclusive",
+                summary="Investigation inconclusive - could not summarize findings",
+                root_cause="The investigation gathered data but the summarization step failed.",
+                recommendations=["Review logs and traces manually"],
+                raw_response=str(e),
                 tool_calls_made=tool_calls_made,
-                confidence="low"
+                confidence="low",
             )
 
     @staticmethod

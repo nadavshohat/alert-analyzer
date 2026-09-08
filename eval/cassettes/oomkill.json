@@ -1,0 +1,11 @@
+{
+  "name": "oomkill-nodejs-api",
+  "event": {"reason": "OOMKilled", "namespace": "team-a", "workload": "api", "pod_name": "api-7d9f-abc", "message": "Container api was OOMKilled"},
+  "tool_calls": [
+    {"name": "describe_pod", "input": {"namespace": "team-a", "pod_name": "api-7d9f-abc"},
+     "result": "=== TERMINATION SUMMARY (read this FIRST) ===\n  container api: lastState.terminated.reason=OOMKilled exitCode=137 restartCount=5 at 2026-09-08T10:00:00Z\n=== FULL POD SPEC ===\n{...limits: {memory: 512Mi}...}"},
+    {"name": "get_metrics", "input": {"namespace": "team-a", "pod_name": "api-7d9f-abc"},
+     "result": "Metrics for team-a/api-7d9f-abc over last 15 min (30 samples):\n  memory peak: 505 MiB (99% of 512 MiB limit) [WARNING: peak >= 90% of limit - likely OOMKilled]\n  memory avg: 480 MiB\n  cpu peak: 40.0%"}
+  ],
+  "expected": {"root_cause_contains": ["memory", "oom", "limit"], "must_not_resolve": true}
+}
