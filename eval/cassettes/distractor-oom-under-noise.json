@@ -1,0 +1,15 @@
+{
+  "name": "distractor-oom-under-log-noise",
+  "event": {"reason": "CrashLoopBackOff", "namespace": "team-e", "workload": "ingest", "pod_name": "ingest-9c-q", "message": "Back-off restarting failed container"},
+  "tool_calls": [
+    {"name": "get_logs", "input": {"namespace": "team-e", "workload": "ingest"},
+     "result": "[WARN] deprecated API group extensions/v1beta1 will be removed\n[WARN] retrying connection to metrics-exporter (attempt 4)\n[WARN] TLS certificate for telemetry-gateway expires in 20 days\n[WARN] slow query in audit-logger took 1.2s\n[INFO] worker started"},
+    {"name": "describe_pod", "input": {"namespace": "team-e", "pod_name": "ingest-9c-q"},
+     "result": "=== TERMINATION SUMMARY (read this FIRST) ===\n  container ingest: lastState.terminated.reason=OOMKilled exitCode=137 restartCount=6 at 2026-09-08T11:00:00Z"},
+    {"name": "get_metrics", "input": {"namespace": "team-e", "pod_name": "ingest-9c-q"},
+     "result": "Metrics for team-e/ingest-9c-q over last 15 min:\n  memory peak: 1020 MiB (99% of 1024 MiB limit) [WARNING: peak >= 90% of limit - likely OOMKilled]"}
+  ],
+  "expected": {"root_cause_contains": ["memory", "oomkilled", "limit"],
+               "root_cause_must_not_contain": ["metrics-exporter", "deprecated", "certificate", "tls"],
+               "must_not_resolve": true}
+}

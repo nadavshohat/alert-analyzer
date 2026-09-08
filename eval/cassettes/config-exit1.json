@@ -1,0 +1,11 @@
+{
+  "name": "crashloop-missing-env",
+  "event": {"reason": "CrashLoopBackOff", "namespace": "team-b", "workload": "worker", "pod_name": "worker-55c-xyz", "message": "Back-off restarting failed container"},
+  "tool_calls": [
+    {"name": "describe_pod", "input": {"namespace": "team-b", "pod_name": "worker-55c-xyz"},
+     "result": "=== TERMINATION SUMMARY (read this FIRST) ===\n  container worker: lastState.terminated.reason=Error exitCode=1 restartCount=8 at 2026-09-08T10:01:00Z"},
+    {"name": "get_previous_logs", "input": {"namespace": "team-b", "pod_name": "worker-55c-xyz"},
+     "result": "[ERROR] startup: required environment variable DATABASE_URL is not set; refusing to start\nprocess exited with code 1"}
+  ],
+  "expected": {"root_cause_contains": ["DATABASE_URL", "environment", "config"], "must_not_resolve": true}
+}
