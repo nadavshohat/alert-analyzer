@@ -49,16 +49,6 @@ EV = clickhouse.CrashEvent(NOW, "team-a", "wl", "pod-1", "CrashLoopBackOff", "m"
 
 # ---- deterministic classes (current state or recent+unhealthy) ----
 
-def test_current_oomkilled_is_deterministic():
-    pod = _pod(container_statuses=[_cs(terminated=_term("OOMKilled", 137))])
-    a = classifier.classify(EV, _api(pod))
-    assert a and "OOMKilled" in a.summary and a.confidence == "high" and a.resolved is False
-
-
-def test_recent_crashloop_oom_is_deterministic():
-    pod = _pod(container_statuses=[_cs(ready=False, last_terminated=_term("OOMKilled", 137, NOW))])
-    a = classifier.classify(EV, _api(pod))
-    assert a and "OOMKilled" in a.summary
 
 
 def test_image_pull_is_deterministic():
@@ -87,28 +77,23 @@ def test_config_error_is_deterministic():
 
 # ---- residual / escalation (must return None -> model) ----
 
+def test_oomkilled_escalates_to_model():
+    """OOM is left to the agent: pod status shows THAT it OOMed, not WHY."""
+    pod = _pod(container_statuses=[_cs(ready=False, terminated=_term("OOMKilled", 137, NOW))])
+    assert classifier.classify(EV, _api(pod)) is None
+
+
+def test_crashloop_oom_laststate_escalates_to_model():
+    pod = _pod(container_statuses=[_cs(ready=False, last_terminated=_term("OOMKilled", 137, NOW))])
+    assert classifier.classify(EV, _api(pod)) is None
+
+
 def test_plain_error_exit1_escalates():
     pod = _pod(container_statuses=[_cs(last_terminated=_term("Error", 1, NOW))])
     assert classifier.classify(EV, _api(pod)) is None
 
 
-def test_stale_oom_escalates():
-    """A 3h-old OOM the pod already recovered from must NOT be a confident verdict."""
-    pod = _pod(container_statuses=[_cs(ready=False, last_terminated=_term("OOMKilled", 137, STALE))])
-    assert classifier.classify(EV, _api(pod)) is None
 
-
-def test_healthy_sidecar_old_oom_does_not_shadow_failing_container():
-    """A ready sidecar's old OOM must not shadow the actually-failing container."""
-    sidecar = _cs(name="istio-proxy", ready=True, last_terminated=_term("OOMKilled", 137, STALE))
-    app = _cs(name="app", ready=False, last_terminated=_term("Error", 1, NOW))
-    assert classifier.classify(EV, _api(_pod(container_statuses=[sidecar, app]))) is None
-
-
-def test_ready_container_recent_oom_escalates():
-    """Recent OOM but the container is now ready (recovered) -> not the current cause."""
-    pod = _pod(container_statuses=[_cs(ready=True, last_terminated=_term("OOMKilled", 137, NOW))])
-    assert classifier.classify(EV, _api(pod)) is None
 
 
 def test_no_api_escalates():
@@ -131,7 +116,7 @@ def _analyzer():
 
 def test_deterministic_class_skips_the_model():
     a = _analyzer()
-    pod = _pod(container_statuses=[_cs(terminated=_term("OOMKilled", 137))])
+    pod = _pod(container_statuses=[_cs(waiting={"reason": "ImagePullBackOff", "message": "no"})])
     a.k8s_tools = types.SimpleNamespace(k8s_api=_api(pod))
     called = {"analyze": False, "sent": False}
     class Agent:
