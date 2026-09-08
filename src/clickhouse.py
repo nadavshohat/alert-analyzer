@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 import requests
-from urllib.parse import quote
 
 from config import config
 
 logger = logging.getLogger(__name__)
+
+
+class BackendError(Exception):
+    """Raised when the telemetry backend is unreachable or errors, as distinct
+    from a successful query that returned no rows."""
 
 
 @dataclass
@@ -96,7 +100,7 @@ class ClickhouseClient:
         }
 
         if since_timestamp:
-            time_filter = "toDateTime64({since_ts:String}, 9)"
+            time_filter = "toDateTime64({since_ts:String}, 9, 'UTC')"
             params["since_ts"] = since_timestamp.strftime('%Y-%m-%d %H:%M:%S')
         else:
             time_filter = "now() - INTERVAL 1 MINUTE"
@@ -135,7 +139,7 @@ class ClickhouseClient:
             return events
         except Exception as e:
             logger.error(f"Failed to get crash events: {e}")
-            return []
+            raise BackendError(f"crash-event query failed: {e}") from e
 
     def _fetch_logs(self, where_clause: str, params: dict, minutes: int, label: str) -> List[LogEntry]:
         """Fetch logs: error/fatal first, then backfill with the rest."""
@@ -187,7 +191,7 @@ class ClickhouseClient:
             return logs
         except Exception as e:
             logger.error(f"Failed to get logs for {label}: {e}")
-            return []
+            raise BackendError(f"log query failed: {e}") from e
 
     def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
         """Fetch recent logs for a workload."""
@@ -251,7 +255,7 @@ class ClickhouseClient:
             )
         except Exception as e:
             logger.error(f"Failed to get metrics for pod {namespace}/{pod_name}: {e}")
-            return None
+            raise BackendError(f"metrics query failed: {e}") from e
 
     def get_slow_traces(self, namespace: str, workload: str) -> List[TraceEntry]:
         """Fetch slowest traces for a workload (sorted by latency desc)."""
@@ -285,4 +289,4 @@ class ClickhouseClient:
             return traces
         except Exception as e:
             logger.error(f"Failed to get traces for {namespace}/{workload}: {e}")
-            return []
+            raise BackendError(f"trace query failed: {e}") from e

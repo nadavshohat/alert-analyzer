@@ -1,28 +1,23 @@
 """Tool implementations for the agentic analyzer."""
 import logging
-import shlex
+import re
 import time
 from typing import List
 
 from config import config
-from clickhouse import ClickhouseClient, LogEntry, MetricsSummary
+from clickhouse import ClickhouseClient, LogEntry, MetricsSummary, BackendError
 
 logger = logging.getLogger(__name__)
 
-# Only these commands are allowed in pod exec
-ALLOWED_COMMANDS = frozenset([
-    'cat', 'head', 'tail', 'less', 'ls', 'dir', 'stat', 'file', 'wc',
-    'grep', 'awk', 'sed', 'sort', 'uniq', 'cut', 'tr',
-    'printenv', 'env', 'echo',
-    'ps', 'top', 'df', 'du', 'free', 'uptime', 'whoami', 'id', 'hostname', 'uname',
-    'find', 'which', 'readlink', 'realpath', 'basename', 'dirname',
-    'date', 'mount', 'lsof', 'ss', 'ip', 'ifconfig', 'netstat',
-])
-
-SHELL_METACHARACTERS = frozenset(['|', ';', '&&', '||', '`', '$(', '>', '<', '&'])
-
+# Env var name fragments whose values are redacted from get_env output.
+# Note: key-name matching is inherently incomplete (a secret under a benign key,
+# e.g. DATABASE_URL, still leaks). The real boundary is RBAC + not exec-ing into
+# pods that mount secrets the analyzer should not read, not this filter.
 SECRET_KEYWORDS = frozenset([
-    'PASSWORD', 'SECRET', 'TOKEN', 'KEY', 'CREDENTIAL', 'PRIVATE', 'API_KEY',
+    # Kept to unambiguous tokens: short fragments like 'PAT'/'PW' collide with
+    # benign vars (PAT in PATH), and key-name matching is best-effort anyway.
+    'PASSWORD', 'PASS', 'SECRET', 'TOKEN', 'KEY', 'CREDENTIAL', 'PRIVATE',
+    'API_KEY', 'AUTH', 'JWT', 'WEBHOOK', 'DSN', 'SALT',
 ])
 
 
@@ -48,13 +43,37 @@ def _parse_memory_to_mib(value: str) -> float:
         return 0.0
 
 
+def _coerce_minutes(value, default: int) -> int:
+    """Model-supplied minutes -> a sane bounded int (1..1440). Never reaches SQL raw."""
+    try:
+        m = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(m, 1440))
+
+
 class ToolHandler:
-    """Executes investigation tools: logs, traces, pod exec, web search."""
+    """Executes investigation tools: logs, traces, pod reads."""
 
     def __init__(self):
         self.clickhouse = ClickhouseClient()
         self._k8s_api = None
-        self._web_searcher = None
+        # Namespace of the event under investigation. Set per-investigation so a
+        # tool call (or injected text steering one) cannot read from or exec into
+        # a namespace unrelated to the crash being analyzed.
+        self.investigation_namespace = None
+
+    def _ns(self, params: dict) -> str:
+        """Resolve the namespace for a tool call, forced to the investigation's own
+        namespace when one is set. A mismatched request is overridden and logged."""
+        requested = params.get("namespace", "")
+        if self.investigation_namespace:
+            if requested and requested != self.investigation_namespace:
+                logger.warning(
+                    f"Tool requested namespace {requested!r}; overriding to "
+                    f"investigation namespace {self.investigation_namespace!r}")
+            return self.investigation_namespace
+        return requested
 
     @property
     def k8s_api(self):
@@ -70,21 +89,15 @@ class ToolHandler:
                 logger.warning(f"Could not load kubernetes config: {e}")
         return self._k8s_api
 
-    @property
-    def web_searcher(self):
-        if self._web_searcher is None:
-            from ddgs import DDGS
-            self._web_searcher = DDGS()
-        return self._web_searcher
-
     def execute(self, name: str, tool_input: dict) -> str:
         """Dispatch a tool call by name."""
         handlers = {
             "get_logs": self._get_logs,
             "get_traces": self._get_traces,
             "get_metrics": self._get_metrics,
-            "exec_in_pod": self._exec_in_pod,
-            "search_web": self._search_web,
+            "read_file": self._read_file,
+            "list_dir": self._list_dir,
+            "get_env": self._get_env,
             "describe_pod": self._describe_pod,
             "get_previous_logs": self._get_previous_logs,
         }
@@ -96,16 +109,19 @@ class ToolHandler:
     # -- get_logs --
 
     def _get_logs(self, params: dict) -> str:
-        namespace = params.get("namespace", "")
+        namespace = self._ns(params)
         workload = params.get("workload", "")
         pod_name = params.get("pod_name", "")
-        minutes = params.get("minutes", config.log_lookback_minutes)
+        minutes = _coerce_minutes(params.get("minutes"), config.log_lookback_minutes)
 
-        logs: List[LogEntry] = []
-        if workload:
-            logs = self.clickhouse.get_logs_for_workload(namespace, workload, minutes)
-        if not logs and pod_name:
-            logs = self.clickhouse.get_logs_for_pod(namespace, pod_name, minutes)
+        try:
+            logs: List[LogEntry] = []
+            if workload:
+                logs = self.clickhouse.get_logs_for_workload(namespace, workload, minutes)
+            if not logs and pod_name:
+                logs = self.clickhouse.get_logs_for_pod(namespace, pod_name, minutes)
+        except BackendError:
+            return "Telemetry backend unavailable - could not fetch logs (this is NOT evidence that the workload produced no logs)."
 
         if not logs:
             return f"No logs found for this workload/pod in the last {minutes} minutes."
@@ -122,9 +138,12 @@ class ToolHandler:
     # -- get_traces --
 
     def _get_traces(self, params: dict) -> str:
-        namespace = params["namespace"]
+        namespace = self._ns(params)
         workload = params["workload"]
-        traces = self.clickhouse.get_slow_traces(namespace, workload)
+        try:
+            traces = self.clickhouse.get_slow_traces(namespace, workload)
+        except BackendError:
+            return "Telemetry backend unavailable - could not fetch traces."
 
         if not traces:
             return "No traces found for this workload."
@@ -141,11 +160,14 @@ class ToolHandler:
     # -- get_metrics --
 
     def _get_metrics(self, params: dict) -> str:
-        namespace = params["namespace"]
+        namespace = self._ns(params)
         pod_name = params["pod_name"]
-        minutes = int(params.get("minutes", 15))
+        minutes = _coerce_minutes(params.get("minutes"), 15)
 
-        summary: MetricsSummary | None = self.clickhouse.get_metrics_for_pod(namespace, pod_name, minutes)
+        try:
+            summary: MetricsSummary | None = self.clickhouse.get_metrics_for_pod(namespace, pod_name, minutes)
+        except BackendError:
+            return "Telemetry backend unavailable - could not fetch metrics (this is NOT evidence against OOM)."
         if not summary:
             return f"No metrics found for {namespace}/{pod_name} in last {minutes} minutes."
 
@@ -183,82 +205,99 @@ class ToolHandler:
             logger.debug(f"Could not fetch memory limit: {e}")
         return 0.0
 
-    # -- exec_in_pod --
+    # -- pod read operations (read_file / list_dir / get_env) --
+    #
+    # The model never supplies a command or a binary. Each tool builds a FIXED
+    # argv and hands it to the Kubernetes exec API, which runs it directly with
+    # no shell. The only model-controlled value is a path, validated as absolute
+    # and passed after "--" so it cannot become an option flag. This removes the
+    # interpreter and argument-injection class that a command allowlist cannot close.
 
-    def _exec_in_pod(self, params: dict) -> str:
-        namespace = params["namespace"]
-        pod_name = params["pod_name"]
-        command_str = params["command"]
+    @staticmethod
+    def _validate_path(path: str) -> str:
+        if not isinstance(path, str) or not path:
+            return ""
+        if not path.startswith("/") or any(ord(c) < 0x20 for c in path):
+            return ""
+        return path
 
-        # Security: block shell metacharacters
-        for meta in SHELL_METACHARACTERS:
-            if meta in command_str:
-                return f"Command contains disallowed character '{meta}'. Only simple read-only commands are permitted."
+    def _read_file(self, params: dict) -> str:
+        path = self._validate_path(params.get("path", ""))
+        if not path:
+            return "Invalid path. Provide an absolute file path, e.g. /app/config.json."
+        return self._pod_exec(self._ns(params), params.get("pod_name", ""),
+                              ["cat", "--", path])
 
-        try:
-            parsed = shlex.split(command_str)
-        except ValueError as e:
-            return f"Could not parse command: {e}"
+    def _list_dir(self, params: dict) -> str:
+        path = self._validate_path(params.get("path", "/"))
+        if not path:
+            return "Invalid path. Provide an absolute directory path, e.g. /app."
+        return self._pod_exec(self._ns(params), params.get("pod_name", ""),
+                              ["ls", "-la", "--", path])
 
-        if not parsed:
-            return "Empty command."
+    _ENV_LINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
-        base_cmd = parsed[0].rsplit('/', 1)[-1]
-        if base_cmd not in ALLOWED_COMMANDS:
-            return f"Command '{base_cmd}' is not allowed. Allowed commands: {', '.join(sorted(ALLOWED_COMMANDS))}"
+    def _get_env(self, params: dict) -> str:
+        out = self._pod_exec(self._ns(params), params.get("pod_name", ""), ["printenv"])
+        # Best-effort redaction by key name (NOT a security boundary: a value under
+        # a benign key, e.g. DATABASE_URL, still leaks, and read_file can read the
+        # same secrets directly). A NAME= line starts a var; lines without a valid
+        # env-name prefix are continuation lines of a multi-line value and inherit
+        # the current var's redaction decision, so multi-line secrets are dropped whole.
+        kept = []
+        redacting = False
+        for line in out.split("\n"):
+            if self._ENV_LINE.match(line):
+                key = line.split("=", 1)[0]
+                redacting = any(kw in key.upper() for kw in SECRET_KEYWORDS)
+                if not redacting:
+                    kept.append(line)
+            elif not redacting:
+                kept.append(line)
+        return "\n".join(kept)
 
+    def _pod_exec(self, namespace: str, pod_name: str, argv: list) -> str:
+        """Run a FIXED argv (never model-chosen) in the pod, no shell. Retries a
+        crashlooping pod by resolving a currently-running replica."""
+        if not namespace or not pod_name:
+            return "Missing namespace or pod name."
         if not self.k8s_api:
-            return "Kubernetes API not available - cannot exec into pod."
+            return "Kubernetes API not available - cannot read from pod."
 
         from kubernetes.stream import stream
 
         max_retries = 3
         for attempt in range(max_retries):
             target_pod = pod_name if attempt == 0 else self._find_running_pod(namespace, pod_name)
-
             try:
                 resp = stream(
                     self.k8s_api.connect_get_namespaced_pod_exec,
                     name=target_pod,
                     namespace=namespace,
-                    command=parsed,
+                    command=argv,
                     stderr=True,
                     stdin=False,
                     stdout=True,
                     tty=False,
+                    _request_timeout=15,
                 )
-
                 if not resp:
                     return "Command returned empty output."
-
-                if base_cmd in ('printenv', 'env'):
-                    lines = []
-                    for line in resp.split('\n'):
-                        key = line.split('=')[0] if '=' in line else ''
-                        if not any(s in key.upper() for s in SECRET_KEYWORDS):
-                            lines.append(line)
-                    return '\n'.join(lines)
-
                 return resp
-
             except Exception as e:
                 error_msg = str(e).lower()
-                is_not_running = ('container not found' in error_msg
-                                  or 'not running' in error_msg
-                                  or 'not found' in error_msg
-                                  or '403' in error_msg
-                                  or 'handshake' in error_msg)
-
+                is_not_running = ("container not found" in error_msg
+                                  or "not running" in error_msg
+                                  or "not found" in error_msg
+                                  or "handshake" in error_msg)
                 if is_not_running and attempt < max_retries - 1:
                     wait = 5 * (attempt + 1)
                     logger.info(f"Exec attempt {attempt + 1} on {target_pod} failed, retrying in {wait}s...")
                     time.sleep(wait)
                     continue
-
                 if is_not_running:
-                    return "Pod container is not running after multiple retries (CrashLoopBackOff). Could not exec into pod to inspect files or memory."
+                    return "Pod container is not running (CrashLoopBackOff). Could not read from pod."
                 return f"Exec failed: {e}"
-
         return "Exec failed after retries."
 
     def _find_running_pod(self, namespace: str, pod_name: str, workload: str = "") -> str:
@@ -281,7 +320,7 @@ class ToolHandler:
     # -- describe_pod --
 
     def _describe_pod(self, params: dict) -> str:
-        namespace = params["namespace"]
+        namespace = self._ns(params)
         pod_name = params["pod_name"]
 
         if not self.k8s_api:
@@ -307,7 +346,7 @@ class ToolHandler:
                     highlights.append(f"  container {c.name}: restartCount={rc}")
 
             header = (
-                f"=== TERMINATION SUMMARY (read this FIRST) ===\n"
+                "=== TERMINATION SUMMARY (read this FIRST) ===\n"
                 + ("\n".join(highlights) if highlights else "  (no container statuses available)")
                 + "\n=== FULL POD SPEC ===\n"
             )
@@ -322,7 +361,7 @@ class ToolHandler:
         (equivalent to `logs --previous`). This is where a startup panic or
         crash-loop error lives when get_logs (observability platform) is empty,
         because the crashed instance's stdout often never reaches ingestion."""
-        namespace = params.get("namespace", "")
+        namespace = self._ns(params)
         pod_name = params.get("pod_name", "")
         container = params.get("container", "")
 
@@ -368,23 +407,3 @@ class ToolHandler:
             # Pod not found = already gone
             return True
 
-    # -- search_web --
-
-    def _search_web(self, params: dict) -> str:
-        query = params["query"]
-        try:
-            results = list(self.web_searcher.text(query, max_results=5))
-            if not results:
-                return "No web results found."
-
-            formatted = []
-            for r in results:
-                title = r.get('title', '')
-                body = r.get('body', '')
-                url = r.get('href', '')
-                formatted.append(f"**{title}**\n{body}\nURL: {url}")
-
-            return f"Found {len(results)} results:\n\n" + "\n\n".join(formatted)
-
-        except Exception as e:
-            return f"Web search failed: {e}"

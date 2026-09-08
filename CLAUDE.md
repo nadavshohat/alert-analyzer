@@ -8,7 +8,7 @@ A long-running Kubernetes pod (`src/main.py`) that polls Groundcover's ClickHous
 
 ## Commands
 
-There is no test suite, lint config, or Makefile. Common ops:
+Tests: `PYTHONPATH=src pytest tests/` (characterization + regression suite). No lint config or Makefile yet. Common ops:
 
 ```bash
 # Run locally (requires env vars: CLICKHOUSE_*, SLACK_WEBHOOK_URL, AWS creds for Bedrock, CLUSTER_NAME)
@@ -29,7 +29,7 @@ Six files in `src/`, each one layer:
 - `main.py` -> `AlertAnalyzer`: polling loop, dedup, transient-event filters
 - `clickhouse.py` -> `ClickhouseClient`: HTTP queries against Groundcover's `events`, `logs`, `traces`, `infra_measurements` tables
 - `agent.py` -> `AgentAnalyzer`: Bedrock Converse API tool-use loop (max 20 turns)
-- `tools.py` -> `ToolHandler`: implementations of the 6 tools the agent can call
+- `tools.py` -> `ToolHandler`: implementations of the tools the agent can call
 - `notifier.py` -> `SlackNotifier`: mrkdwn formatting + Groundcover deep link
 - `config.py`: env-var-backed dataclass, single global `config`
 
@@ -43,24 +43,24 @@ ClickHouse events table -> CrashEvent -> dedup -> 30s wait -> _is_pod_healthy ch
 
 ### Agent loop (the load-bearing part)
 
-`agent.py:181-306` drives Bedrock's Converse API. The model returns either `stop_reason=end_turn` (parse final text) or `stop_reason=tool_use` (execute every `toolUse` block in the message, append `toolResult` blocks as a user message, loop). Tool results are truncated to 20KB before being fed back to the model. If the loop hits `MAX_AGENT_TURNS` (default 20), one final no-tool call asks for a summary.
+The `AgentAnalyzer.analyze` loop in `agent.py` drives Bedrock's Converse API. The model returns either `stop_reason=end_turn` (parse final text) or `stop_reason=tool_use` (execute every `toolUse` block in the message, append `toolResult` blocks as a user message, loop). Tool results are truncated to 20KB before being fed back to the model. If the loop hits `MAX_AGENT_TURNS` (default 20), one final call asks for a summary (still passing toolConfig, as Converse requires once tool blocks exist in the history).
 
 The system prompt in `SYSTEM_PROMPT` enforces a metrics-first investigation order and is deliberately strict about not concluding "GIL contention" / "event loop starvation" from code patterns alone. The output format is parsed line-by-line in `_parse_response` - changes to the prompt's output schema must keep these exact prefixes: `SUMMARY:`, `ROOT_CAUSE:` (or `ROOT CAUSE:`), `CONFIDENCE:`, `STATUS:`, `RECOMMENDATIONS:`.
 
 ### Tools the agent can call
 
-Defined in `TOOL_DEFINITIONS` (`agent.py:46`), dispatched in `ToolHandler.execute` (`tools.py:80`):
+Defined in `TOOL_DEFINITIONS`, dispatched in `ToolHandler.execute`:
 
 | Tool | Backed by |
 |------|-----------|
-| `get_logs` | ClickHouse `logs` table, error/fatal first then backfill (`clickhouse.py:140`) |
+| `get_logs` | ClickHouse `logs` table, error/fatal first then backfill |
 | `get_traces` | ClickHouse `traces` table, slowest first |
 | `get_metrics` | ClickHouse `infra_measurements`, joined with pod's k8s memory limit to compute % |
 | `describe_pod` | k8s API, with a hand-rolled "TERMINATION SUMMARY" prepended to the JSON |
-| `exec_in_pod` | k8s API exec stream, with an allowlist of read-only commands and shell-metachar blocklist (`tools.py:13-22`) |
-| `search_web` | `ddgs` (DuckDuckGo) |
+| `read_file` / `list_dir` / `get_env` | k8s exec stream running a FIXED argv (`cat`/`ls`/`printenv`), no shell, path validated, namespace forced to the alert's own. `get_env` redacts secret-looking keys best-effort |
+| `get_previous_logs` | k8s API previous-container logs |
 
-`exec_in_pod` retries up to 3 times when the container is restarting and will look up a sibling running pod from the same workload prefix if the original is gone (`_find_running_pod`).
+The pod-read ops retry up to 3 times when the container is restarting and will look up a sibling running pod from the same workload prefix if the original is gone (`_find_running_pod`).
 
 ### Noise suppression
 

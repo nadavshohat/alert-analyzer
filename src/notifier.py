@@ -1,7 +1,7 @@
 """Slack notifier with proper mrkdwn formatting."""
 import logging
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from config import config
@@ -26,7 +26,11 @@ class SlackNotifier:
 
     def __init__(self):
         self.webhook_url = config.slack_webhook_url
-        self.tz = pytz.timezone(config.timezone)
+        try:
+            self.tz = ZoneInfo(config.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning(f"Unknown timezone {config.timezone!r}, falling back to UTC")
+            self.tz = ZoneInfo("UTC")
 
     def send(self, event: CrashEvent, analysis: Analysis) -> bool:
         """Send a crash analysis notification to Slack."""
@@ -40,9 +44,9 @@ class SlackNotifier:
         else:
             emoji = SEVERITY_EMOJI.get(event.reason, '\U0001F514')  # Bell as default
 
-        # Format timestamp in Israel time
-        now_israel = datetime.now(self.tz)
-        timestamp_str = now_israel.strftime('%H:%M')
+        # Format timestamp in the configured timezone
+        now_local = datetime.now(self.tz)
+        timestamp_str = now_local.strftime('%H:%M')
 
         # Build Groundcover deep link
         gc_link = self._build_groundcover_link(event)

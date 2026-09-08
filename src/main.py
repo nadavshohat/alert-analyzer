@@ -2,13 +2,12 @@
 import logging
 import signal
 import sys
-import time
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from config import config
-from clickhouse import ClickhouseClient, CrashEvent
+from clickhouse import ClickhouseClient, CrashEvent, BackendError
 from agent import AgentAnalyzer
 from notifier import SlackNotifier
 from tools import ToolHandler
@@ -116,7 +115,8 @@ class AlertAnalyzer:
         """Process a single crash event."""
         grace = SLOW_RETRY_GRACE_SECONDS if event.reason in SLOW_RETRY_REASONS else DEFAULT_GRACE_SECONDS
         logger.info(f"Event detected: {event.namespace}/{event.workload} - {event.reason}, waiting {grace}s before analysis...")
-        time.sleep(grace)
+        if self._shutdown.wait(timeout=grace):
+            return  # shutting down: skip analysis rather than block SIGTERM
 
         # Pre-check: if pod is already healthy/gone, skip entirely
         if self._is_pod_healthy(event):
@@ -150,7 +150,7 @@ class AlertAnalyzer:
         try:
             poll_start = datetime.now(timezone.utc)
             events = self.clickhouse.get_crash_events(since_timestamp=self.last_poll_time)
-            self.last_poll_time = poll_start
+            self.last_poll_time = poll_start  # only reached if the read succeeded
 
             for event in events:
                 if self._is_duplicate(event):
@@ -172,6 +172,10 @@ class AlertAnalyzer:
             # Cleanup old dedup entries periodically
             self._cleanup_seen_events()
 
+        except BackendError as e:
+            # Backend unreachable: leave last_poll_time unchanged so the next poll
+            # re-reads this window instead of silently dropping its events.
+            logger.error(f"Backend error during polling, watermark held: {e}")
         except Exception as e:
             logger.error(f"Error during polling: {e}")
 
