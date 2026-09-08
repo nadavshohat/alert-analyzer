@@ -37,5 +37,8 @@ helm install alert-analyzer ./chart -n observability \
 | `secrets.slackWebhookUrl` / `secrets.clickhousePassword` | `""` | inline values, stored in the release |
 
 The service account is bound to a ClusterRole granting `get`/`list` on pods and
-`get` on pod logs plus `create` on pod exec, which the agent uses to read pod
-state, logs, and files during an investigation.
+`get` on pod logs (cluster-wide, read-only, so the agent can triage any
+namespace). With `rbac.allowExec: true` (default) it also gets `create` on
+`pods/exec`, which the file/env investigation tools use. That is a cluster-wide
+exec grant; set `rbac.allowExec: false` to drop it, and the agent falls back to
+logs and metrics only.

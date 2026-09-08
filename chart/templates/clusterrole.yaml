@@ -11,6 +11,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  {{- if .Values.rbac.allowExec }}
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create", "get"]
+  {{- end }}

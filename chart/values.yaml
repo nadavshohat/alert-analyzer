@@ -36,6 +36,14 @@ serviceAccount:
   # For AWS IRSA, set: eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>
   annotations: {}
 
+rbac:
+  # pods and pods/log get/list are always granted (cluster-wide, read-only) so the
+  # agent can triage crashes in any namespace. allowExec additionally grants
+  # create on pods/exec, which powers the read_file/list_dir/get_env investigation
+  # tools. It is a cluster-wide exec grant: disable it to remove that blast radius
+  # (those three tools then return "unavailable" and the agent uses logs/metrics only).
+  allowExec: true
+
 resources:
   requests:
     cpu: "100m"
