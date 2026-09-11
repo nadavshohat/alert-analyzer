@@ -314,14 +314,17 @@ class AgentAnalyzer:
                 raw_text = self._extract_text(assistant_msg)
                 note = ("Analysis truncated (max_tokens) — raise BEDROCK_MAX_TOKENS"
                         if stop_reason == "max_tokens" else "Analysis interrupted")
-                return Analysis(
-                    summary=raw_text[:200] or note,
-                    root_cause=note,
-                    recommendations=["Review logs manually"],
-                    raw_response=raw_text,
-                    tool_calls_made=tool_calls_made,
-                    confidence="low"
-                )
+                # Parse the partial text so the SUMMARY:/ROOT_CAUSE: labels are stripped
+                # for display even though it was cut short; the note replaces the
+                # (incomplete) root cause and the verdict is low-confidence.
+                analysis = self._parse_response(raw_text)
+                analysis.summary = analysis.summary or note
+                analysis.root_cause = note
+                analysis.recommendations = analysis.recommendations or ["Review logs manually"]
+                analysis.raw_response = raw_text
+                analysis.tool_calls_made = tool_calls_made
+                analysis.confidence = "low"
+                return analysis
 
         logger.warning(f"Agent hit max turns ({config.max_agent_turns}); summarizing from evidence")
         return self._summarize_no_tools(event, evidence, tool_calls_made)
