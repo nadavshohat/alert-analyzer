@@ -1,150 +1,133 @@
+<div align="center">
+
+<img src="assets/logo.svg" alt="Alert Analyzer" width="110">
+
 # Alert Analyzer
 
-AI-powered Kubernetes crash analysis using Groundcover + AWS Bedrock Claude.
+**An agent that investigates Kubernetes alerts the moment they fire, and returns a probable root cause instead of a raw alert.**
 
-Detects pod crashes, analyzes logs and traces, and sends Slack alerts with root cause analysis.
+</div>
 
-## Architecture
+A `CrashLoopBackOff` notification tells you a pod is restarting. It does not tell you the container was OOMKilled, or that the image tag does not exist, or that a database driver never recovered its connection pool after a failover. Someone still has to open a terminal and do the same ten minutes of archaeology, usually at an inconvenient hour.
 
-```
-Groundcover ClickHouse (events, logs, traces)
-         │
-         ▼
-  Alert Analyzer Pod
-   1. Poll events -> 2. Fetch logs/traces -> 3. Read files/env from pod
-   4. Claude analysis -> 5. Slack alert
-         │                                      │
-         ▼                                      ▼
-   AWS Bedrock (Claude)                    Slack Webhook
-```
+Alert Analyzer does that first pass. It pulls pod state, container logs and metrics through a tool interface, then posts a root cause to Slack with the reasoning behind it.
 
-## Features
+The interesting part is not that it calls a model. It is how often it refuses to.
 
-- **Crash Detection**: Polls ClickHouse for CrashLoopBackOff, OOMKilled, Unhealthy, etc.
-- **Log + Trace Analysis**: Fetches container logs and slow traces for context
-- **Pod Inspection**: Reads files, lists directories, and views (secret-redacted) env vars in the crashing pod via typed, read-only operations scoped to the alert's namespace
-- **AI Analysis**: Claude determines root cause with confidence level
-- **Slack Notifications**: mrkdwn formatted alerts with Groundcover deep links
+## Why it exists
 
-## Project Structure
+Wrapping an LLM around an alert stream is easy and mostly produces expensive noise. Three problems have to be solved before it is worth deploying:
 
-```
-├── src/
-│   ├── main.py          # Entry point, polling loop
-│   ├── config.py         # Configuration (env vars)
-│   ├── agent.py          # Bedrock Converse agentic loop
-│   ├── tools.py          # Tool handlers (logs, traces, pod reads)
-│   ├── clickhouse.py     # ClickHouse queries
-│   └── notifier.py       # Slack formatting
-├── Dockerfile            # Multi-stage build
-└── requirements.txt
-```
+**Most alerts do not need a model.** When Kubernetes already knows the answer, asking a language model is pure cost and variance. An image that will not pull, an evicted pod, a container whose ConfigMap reference is broken: pod status states all of it plainly. A deterministic classifier answers those with no model call at all, and the model is spent only where the cause is genuinely in the logs.
 
-The Helm chart is in [`chart/`](chart/). A Terraform wrapper for AWS deployments lives in a separate private repo (see Deployment below).
+**Pod logs are untrusted input.** The agent reads text an attacker may control. If that text can steer the final verdict, anyone who can write to a log can suppress an alert by planting `STATUS: resolved`. The verdict step therefore runs with no tools available, and a model verdict alone can never silence an alert.
 
-## Configuration
+**Most alerts are noise.** A pod that recovered on its own during a two-minute investigation should not page anyone. Several independent filters exist for that, and every one of them is deterministic.
 
-All configuration via environment variables (set in Helm values or ConfigMap):
+## Status
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLICKHOUSE_HOST` | `groundcover-clickhouse` | ClickHouse hostname |
-| `CLICKHOUSE_PORT` | `8123` | ClickHouse HTTP port |
-| `CLICKHOUSE_PASSWORD` | - | ClickHouse password (secret) |
-| `POLL_INTERVAL_SECONDS` | `30` | Polling frequency |
-| `DEDUP_WINDOW_SECONDS` | `300` | Suppress duplicate alerts |
-| `LOG_LOOKBACK_MINUTES` | `30` | Log fetch window |
-| `EXCLUDE_NAMESPACES` | `kube-system,groundcover` | Ignored namespaces |
-| `EVENT_REASONS` | `CrashLoopBackOff,OOMKilled,...` | Event types to monitor |
-| `BEDROCK_REGION` | `us-west-2` | AWS Bedrock region |
-| `BEDROCK_MODEL` | `us.anthropic.claude-sonnet-5` | Claude model ID (Bedrock inference profile) |
-| `SLACK_WEBHOOK_URL` | - | Slack webhook (secret) |
-| `CLUSTER_NAME` | - | Kubernetes cluster name |
-| `TZ` | `UTC` | Timezone for Slack timestamps (invalid value falls back to UTC) |
-| `BEDROCK_MAX_TOKENS` | `2048` | Max output tokens per Bedrock call |
-| `MAX_AGENT_TURNS` | `20` | Max investigation steps before forced summary |
-| `UNHEALTHY_SKIP_NAMESPACES` | `kube-system,groundcover,...` | Namespaces whose Unhealthy events are skipped |
-| `EVENT_SOURCE` | `clickhouse` | Where crash events come from: `clickhouse` or `kubernetes` |
-| `LOG_SOURCE` | `clickhouse` | Where logs come from: `clickhouse`, `kubernetes`, or `loki` |
-| `METRIC_SOURCE` | `clickhouse` | Where metrics come from: `clickhouse`, `kubernetes`, or `prometheus` |
-| `TRACE_SOURCE` | `clickhouse` | `clickhouse` or `none` (only Groundcover/ClickHouse has traces) |
-| `LOKI_URL` | - | Base URL when `LOG_SOURCE=loki` (e.g. `http://loki:3100`) |
-| `LOKI_TENANT` | - | Sets `X-Scope-OrgID` for multi-tenant Loki |
-| `PROMETHEUS_URL` | - | Base URL when `METRIC_SOURCE=prometheus` (e.g. `http://prometheus:9090`) |
+Running in production on a client's cluster, triaging live alerts into Slack. Single replica, no leader election, one Bedrock provider. It is a working tool, not a product: see [Limitations](#limitations) before deploying it somewhere that matters.
 
-### Telemetry backends
+## How it works
 
-Each signal is selected independently, so a stack can mix backends. Defaults are all-ClickHouse (Groundcover), so existing deployments are unchanged. What each backend can serve:
-
-| Signal | ClickHouse (Groundcover) | Kubernetes API | Loki | Prometheus |
-|--------|--------------------------|----------------|------|------------|
-| events (trigger) | yes | yes | - | - |
-| logs | yes | yes | yes | - |
-| metrics | yes (history) | current only | - | yes (history) |
-| traces | yes | - | - | - |
-
-To run on a plain open-source cluster with no ClickHouse:
-
-```bash
-EVENT_SOURCE=kubernetes
-LOG_SOURCE=loki           # or kubernetes for pod-log reads with no Loki
-METRIC_SOURCE=prometheus  # or kubernetes for current memory via metrics-server
-TRACE_SOURCE=none
-LOKI_URL=http://loki.observability:3100
-PROMETHEUS_URL=http://prometheus.observability:9090
+```mermaid
+flowchart TB
+  A["Crash event from the telemetry backend"] --> B["Dedup and grace period"]
+  B --> C["Pod-health pre-check"]
+  C -->|"recovered"| X["Dropped, no alert"]
+  C -->|"still broken"| D["Deterministic classifier"]
+  D -->|"image pull / eviction / config error"| E["Verdict, no model call"]
+  D -->|"cause is in the logs"| F["Agent investigates via tools"]
+  F --> G["Verdict written by a model with NO tools"]
+  E --> H["Pod-health recheck"]
+  G --> H
+  H -->|"recovered"| X
+  H -->|"still broken"| I["Slack"]
 ```
 
-The Kubernetes-native backend needs no telemetry stack at all (events from the API, logs from pod-log reads, current memory from metrics-server), so `EVENT_SOURCE=kubernetes LOG_SOURCE=kubernetes METRIC_SOURCE=kubernetes TRACE_SOURCE=none` runs anywhere. Two limits to know: core Kubernetes events are retained about an hour, and metrics-server reports only current usage (no history).
+The classifier and the tool-less verdict step are the two decisions that matter. Everything else is plumbing.
 
-## Deployment
+## Design decisions
 
-The chart is in [`chart/`](chart/). It needs three things: AWS credentials for Bedrock (IRSA on EKS), a Slack webhook, and network reach to your telemetry backend (Groundcover ClickHouse today).
+**Deterministic classification before the model.** Failure classes whose cause is complete in pod status are diagnosed directly. This is the K8sGPT pattern: deterministic analyzers first, the model only on the residual. It removes both the cost and the variance from cases where the answer is already known.
 
-### With Helm
+**OOMKilled is deliberately *not* one of those classes.** Pod status shows *that* a container hit its memory limit, never *why*: a leak, a load spike and an undersized limit look identical at that layer. A confident one-line "OOMKilled" verdict would be useless, so OOM escalates to a real investigation of the logs and the memory trend.
 
-Create a secret holding the two sensitive values, then install:
+**The verdict is written by a model that has no tools.** The investigation loop gathers evidence with tools; a separate call then produces the verdict from that evidence with the tool interface removed. Text injected into a pod log cannot trigger an action, because at the moment the verdict is written there is no action available to trigger.
 
-```bash
-kubectl create namespace observability
+**Only deterministic checks may suppress an alert.** The model's own `STATUS: resolved` is carried for display and is never a suppressor. Silence is decided by a pod-health recheck against the live cluster, immediately before sending.
 
-kubectl -n observability create secret generic alert-analyzer-secrets \
-  --from-literal=SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T.../B.../xxx" \
-  --from-literal=CLICKHOUSE_PASSWORD="<clickhouse-password>"
+**Telemetry is pluggable per signal.** Events, logs, metrics and traces are selected independently, so the same binary runs against Groundcover ClickHouse, the Kubernetes API, Loki or Prometheus, in any combination.
 
-helm install alert-analyzer ./chart -n observability \
-  --set secrets.existingSecret=alert-analyzer-secrets \
-  --set groundcover.clusterName=my-cluster \
-  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="arn:aws:iam::<acct>:role/<irsa-role>"
+| Signal | ClickHouse | Kubernetes API | Loki | Prometheus |
+| --- | --- | --- | --- | --- |
+| Crash events | yes | yes | - | - |
+| Logs | yes | yes | yes | - |
+| Metrics | yes, with history | current only | - | yes, with history |
+| Traces | yes | - | - | - |
+
+The Kubernetes-native path needs no telemetry stack at all, so it runs on any cluster.
+
+## Quickstart
+
+```console
+$ kubectl create namespace observability
+$ kubectl -n observability create secret generic alert-analyzer-secrets \
+    --from-literal=SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." \
+    --from-literal=CLICKHOUSE_PASSWORD="<password>"
+$ helm install alert-analyzer ./chart -n observability \
+    --set secrets.existingSecret=alert-analyzer-secrets \
+    --set groundcover.clusterName=my-cluster
 ```
 
-To skip the pre-created secret, pass the values inline with `--set secrets.slackWebhookUrl=...` and `--set secrets.clickhousePassword=...` (they are stored in the Helm release). All other settings are in [`chart/values.yaml`](chart/values.yaml); the environment variables they map to are documented under Configuration above.
+To run with no ClickHouse at all:
 
-### AWS deployments (ProjectCircle internal)
-
-ProjectCircle wraps this chart with a private Terraform module that provisions the IRSA role, reads the Slack webhook from AWS Secrets Manager and the ClickHouse password from a K8s secret, and accepts the Bedrock model agreement. It is a convenience for our EKS clusters and is not required to run the tool.
-
-### Build Docker Image
-
-```bash
-docker build --platform linux/amd64 -t public.ecr.aws/j5u9j5q0/alert-analyzer:latest .
-docker push public.ecr.aws/j5u9j5q0/alert-analyzer:latest
+```console
+$ helm install alert-analyzer ./chart -n observability \
+    --set sources.event=kubernetes --set sources.log=kubernetes \
+    --set sources.metric=prometheus --set sources.trace=none \
+    --set prometheus.url=http://prometheus.observability:9090
 ```
+
+The pod needs AWS credentials for Bedrock. On EKS, annotate the service account with an IRSA role.
+
+> [!WARNING]
+> The chart grants `create` on `pods/exec` cluster-wide by default, which the file and env inspection tools use. Set `rbac.allowExec=false` to drop it; the agent then works from logs and metrics only.
+
+## Limitations
+
+- **Single replica, no leader election.** Two replicas would analyse the same event twice and post duplicate alerts.
+- **Amazon Bedrock only.** No other model provider is wired up.
+- **Traces are ClickHouse-only.** On any other backend the traces tool reports itself unavailable rather than returning an empty result that reads like evidence of nothing being wrong.
+- **The Kubernetes-native event source sees a short window.** Core Kubernetes events are retained about an hour, so a long outage of the analyzer loses the events it was down for. ClickHouse retains far longer.
+- **metrics-server has no history.** With `METRIC_SOURCE=kubernetes` the memory reading is a single current sample, which is materially weaker than a trend when judging an OOM.
+- **Secret redaction in `get_env` is best-effort**, keyed on variable names. A secret under a benign name still leaks. RBAC is the real boundary, not that filter.
+- **No evaluation of diagnosis quality at scale.** The eval harness checks that a verdict names the cause present in recorded evidence. It is a regression signal, not a measure of how often the tool is right in production.
+
+## Repository map
+
+| Path | What is there |
+| --- | --- |
+| `src/classifier.py` | The deterministic first pass. Short, and the most consequential file |
+| `src/agent.py` | Bedrock Converse tool-use loop, and the no-tools verdict step |
+| `src/backends/` | Per-signal source protocols and the Kubernetes, Loki and Prometheus implementations |
+| `src/clickhouse.py` | Groundcover ClickHouse client and the shared wire types |
+| `src/tools.py` | Tools the agent may call. Pod access is a fixed argv over the exec API, never a shell |
+| `src/main.py` | Polling loop, dedup, grace periods, the health checks that gate every alert |
+| `tests/` | Characterization and regression tests, including the injection and suppression invariants |
+| `eval/` | Record-replay harness scoring verdicts against recorded evidence |
+| `chart/` | Helm chart |
 
 ## Development
 
-```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt pytest
-PYTHONPATH=src pytest tests/ -q
+```console
+$ python -m venv .venv && . .venv/bin/activate
+$ pip install -r requirements.txt pytest
+$ PYTHONPATH=src pytest tests/ -q
 ```
 
-## Security
-
-- Pod access is read-only and typed (`read_file` / `list_dir` / `get_env`); there is no arbitrary command execution. All pod access is scoped to the namespace of the alert under investigation.
-- Env var values whose key name looks like a secret are redacted on a best-effort basis; this is not a security boundary, so the deployment RBAC should not mount secrets the analyzer does not need.
-- Requires a namespaced RBAC Role granting `get,list` on `pods`/`pods/log` and `get,create` on `pods/exec`.
+Architecture notes and the reasoning behind each suppression rule are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-MIT
-
+MIT. See [LICENSE](LICENSE).
