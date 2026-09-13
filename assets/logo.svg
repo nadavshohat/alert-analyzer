@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Alert Analyzer">
+  <title>Alert Analyzer</title>
+  <!-- container hexagon: nods to Kubernetes / a running pod -->
+  <path d="M32 3.5 55.7 17.2v27.6L32 58.5 8.3 44.8V17.2z"
+        fill="none" stroke="#5B8DEF" stroke-width="3.2" stroke-linejoin="round"/>
+  <!-- the signal being investigated: a healthy line that spikes and drops -->
+  <path d="M15 36.5h5.5l3.5-8 4 15 3.5-9h4"
+        fill="none" stroke="#94A9C9" stroke-width="2.6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- magnifier: the investigation itself -->
+  <circle cx="38.5" cy="31.5" r="10.5" fill="none" stroke="#5B8DEF" stroke-width="3.2"/>
+  <path d="M46.2 39.4 53 46.2" stroke="#5B8DEF" stroke-width="3.6" stroke-linecap="round"/>
+</svg>
