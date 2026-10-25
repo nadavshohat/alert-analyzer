@@ -16,10 +16,10 @@ class Config:
     # Telemetry source selection. Each signal is chosen independently so a stack
     # can mix backends (e.g. Kubernetes events + Loki logs + Prometheus metrics).
     # Defaults are all-clickhouse (Groundcover), so existing deployments are unchanged.
-    #   EVENT_SOURCE  : clickhouse | kubernetes
-    #   LOG_SOURCE    : clickhouse | kubernetes | loki
-    #   METRIC_SOURCE : clickhouse | kubernetes | prometheus
-    #   TRACE_SOURCE  : clickhouse | none   (only clickhouse/Groundcover has traces)
+    #   EVENT_SOURCE  : clickhouse | kubernetes | signoz
+    #   LOG_SOURCE    : clickhouse | kubernetes | loki | signoz
+    #   METRIC_SOURCE : clickhouse | kubernetes | prometheus | signoz
+    #   TRACE_SOURCE  : clickhouse | signoz | none
     event_source: str = field(default_factory=lambda: os.environ.get('EVENT_SOURCE', 'clickhouse').strip().lower())
     log_source: str = field(default_factory=lambda: os.environ.get('LOG_SOURCE', 'clickhouse').strip().lower())
     metric_source: str = field(default_factory=lambda: os.environ.get('METRIC_SOURCE', 'clickhouse').strip().lower())
@@ -30,6 +30,9 @@ class Config:
     loki_tenant: str = field(default_factory=lambda: os.environ.get('LOKI_TENANT', ''))
     # Prometheus (METRIC_SOURCE=prometheus).
     prometheus_url: str = field(default_factory=lambda: os.environ.get('PROMETHEUS_URL', '').rstrip('/'))
+    # SigNoz (any *_SOURCE=signoz). The key is a SigNoz service-account API key; Viewer is enough.
+    signoz_url: str = field(default_factory=lambda: os.environ.get('SIGNOZ_URL', '').rstrip('/'))
+    signoz_api_key: str = field(default_factory=lambda: os.environ.get('SIGNOZ_API_KEY', ''))
 
     # Polling
     poll_interval_seconds: int = field(default_factory=lambda: int(os.environ.get('POLL_INTERVAL_SECONDS', '30')))
@@ -47,7 +50,13 @@ class Config:
         'UNHEALTHY_SKIP_NAMESPACES', 'kube-system,groundcover,istio-system,external-secrets,kubescape'
     ).split(','))
 
-    # Bedrock
+    # Model provider: bedrock (Converse API, default) | vertex (Claude on Vertex AI).
+    model_provider: str = field(default_factory=lambda: os.environ.get('MODEL_PROVIDER', 'bedrock').strip().lower())
+    vertex_project_id: str = field(default_factory=lambda: os.environ.get('VERTEX_PROJECT_ID', ''))
+    vertex_region: str = field(default_factory=lambda: os.environ.get('VERTEX_REGION', 'global'))
+    vertex_model: str = field(default_factory=lambda: os.environ.get('VERTEX_MODEL', 'claude-sonnet-5-5'))
+
+    # Bedrock (BEDROCK_MAX_TOKENS also caps Vertex responses)
     bedrock_region: str = field(default_factory=lambda: os.environ.get('BEDROCK_REGION', 'us-west-2'))
     bedrock_model: str = field(default_factory=lambda: os.environ.get(
         'BEDROCK_MODEL', 'us.anthropic.claude-sonnet-5'

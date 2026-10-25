@@ -5,3 +5,4 @@ boto3~=1.43.0
 requests~=2.34.0        # >=2.34 clears CVE-2024-35195/47081 and CVE-2026-25645
 kubernetes~=36.0.0      # <37: 37.x is a breaking rewrite
 tzdata~=2026.3          # data for stdlib zoneinfo (replaces pytz)
+anthropic[vertex]~=1.13.0  # Claude on Vertex (MODEL_PROVIDER=vertex); 2.x is too new to pin
