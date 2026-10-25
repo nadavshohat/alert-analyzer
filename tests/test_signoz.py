@@ -16,6 +16,14 @@ class FakeSession:
         self.payload, self.status, self.exc = payload, status, exc
         self.calls = []
 
+    keys = {"k8s.namespace.name": [], "k8s.pod.name": [], "k8s.deployment.name": [],
+            "k8s.statefulset.name": [], "k8s.daemonset.name": [], "k8s.cronjob.name": []}
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "params": params, "headers": headers})
+        return types.SimpleNamespace(raise_for_status=lambda: None,
+                                     json=lambda: {"status": "success", "data": {"keys": self.keys}})
+
     def post(self, url, json=None, headers=None, timeout=None):
         self.calls.append({"url": url, "json": json, "headers": headers})
         if self.exc:
@@ -141,7 +149,7 @@ def test_logs_sorted_and_level_fallback():
     ]
     sess = FakeSession(_raw(rows))
     logs = _src(sess).get_logs_for_workload("shop", "api")
-    expr = sess.calls[0]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
+    expr = sess.calls[-1]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
     assert "k8s.deployment.name = 'api'" in expr and "LIKE" not in expr  # api must not match api-gateway
     assert "k8s.cronjob.name = 'api'" in expr  # CronJob pods (api-<schedule>-<id>) keep their logs
     assert [l.body for l in logs] == ["first", "later ERROR boom"]
@@ -190,7 +198,7 @@ def test_traces_parse_duration_and_skip_untimed():
     sess = FakeSession(_raw(rows))
     t = _src(sess).get_slow_traces("shop", "api")
     assert len(t) == 1 and t[0].duration_seconds == 2.5 and t[0].span_name == "GET /"
-    assert "k8s.statefulset.name = 'api'" in sess.calls[0]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
+    assert "k8s.statefulset.name = 'api'" in sess.calls[-1]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
 
 
 def test_factory_selects_signoz_for_every_signal(monkeypatch):
@@ -213,3 +221,22 @@ def test_slack_link_only_for_groundcover_events(monkeypatch):
         monkeypatch.setattr(config, "event_source", src)
         notifier.SlackNotifier().send(ev, an)
         assert ("View in Groundcover" in str(sent)) is expected
+
+
+def test_workload_filter_uses_only_keys_signoz_has():
+    sess = FakeSession(_raw([]))
+    sess.keys = {"k8s.namespace.name": [], "k8s.deployment.name": []}
+    src = _src(sess)
+    src.get_logs_for_workload("shop", "api")
+    expr = sess.calls[-1]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
+    assert expr == "k8s.namespace.name = 'shop' AND (k8s.deployment.name = 'api')"
+    src.get_logs_for_workload("shop", "api")
+    assert sum(1 for c in sess.calls if "params" in c) == 1  # keys cached
+
+
+def test_no_workload_keys_is_an_honest_error_not_a_bad_query():
+    sess = FakeSession(_raw([]))
+    sess.keys = {"k8s.namespace.name": []}
+    with pytest.raises(BackendError):
+        _src(sess).get_slow_traces("shop", "api")
+    assert all("json" not in c for c in sess.calls)

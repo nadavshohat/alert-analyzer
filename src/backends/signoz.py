@@ -10,6 +10,7 @@ Filter expressions are built by string interpolation, so every name is checked
 with validate_k8s_name first, including names read back from SigNoz.
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -32,10 +33,8 @@ def _field(name: str, context: str) -> Dict[str, str]:
     return {"name": name, "fieldContext": context}
 
 
-def _workload_match(wl: str) -> str:
-    """Filter matching a workload by its controller name (wl is pre-validated)."""
-    keys = ("k8s.deployment.name", "k8s.statefulset.name", "k8s.daemonset.name", "k8s.cronjob.name")
-    return "(" + " OR ".join(f"{k} = '{wl}'" for k in keys) + ")"
+_WORKLOAD_KEYS = ("k8s.deployment.name", "k8s.statefulset.name", "k8s.daemonset.name", "k8s.cronjob.name")
+_KEYS_TTL = 600
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
@@ -52,6 +51,31 @@ class SignozSource:
         self.base_url = (base_url or config.signoz_url).rstrip("/")
         self.api_key = api_key or config.signoz_api_key
         self.session = requests.Session()
+        self._keys: Dict[str, Any] = {}
+
+    def _known_keys(self, signal: str) -> set:
+        """k8s.* field keys SigNoz has ingested for a signal. SigNoz rejects a
+        filter on a key it has never seen, so filters use only these."""
+        cached = self._keys.get(signal)
+        if cached and time.monotonic() - cached[0] < _KEYS_TTL:
+            return cached[1]
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/api/v1/fields/keys", params={"signal": signal, "searchText": "k8s."},
+                headers={"SIGNOZ-API-KEY": self.api_key}, timeout=30)
+            resp.raise_for_status()
+            keys = set(((resp.json().get("data") or {}).get("keys") or {}).keys())
+        except (requests.RequestException, ValueError) as e:
+            raise BackendError(f"SigNoz field keys failed: {e}") from e
+        self._keys[signal] = (time.monotonic(), keys)
+        return keys
+
+    def _workload_match(self, signal: str, wl: str) -> str:
+        """Filter matching a workload by its controller name (wl is pre-validated)."""
+        keys = [k for k in _WORKLOAD_KEYS if k in self._known_keys(signal)]
+        if not keys:
+            raise BackendError(f"SigNoz {signal} carry no workload name fields (k8sattributes processor)")
+        return "(" + " OR ".join(f"{k} = '{wl}'" for k in keys) + ")"
 
     def _query(self, request_type: str, spec: Dict[str, Any], minutes: int) -> Dict[str, Any]:
         if not self.base_url:
@@ -160,7 +184,7 @@ class SignozSource:
     def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
         ns = validate_k8s_name(namespace, "namespace")
         wl = validate_k8s_name(workload, "workload")
-        return self._logs(f"k8s.namespace.name = '{ns}' AND {_workload_match(wl)}", minutes)
+        return self._logs(f"k8s.namespace.name = '{ns}' AND {self._workload_match('logs', wl)}", minutes)
 
     # ---- metrics ----
 
@@ -202,9 +226,10 @@ class SignozSource:
     def get_slow_traces(self, namespace: str, workload: str) -> List[TraceEntry]:
         ns = validate_k8s_name(namespace, "namespace")
         wl = validate_k8s_name(workload, "workload")
+        match = self._workload_match("traces", wl)
         result = self._query("raw", {
             "signal": "traces",
-            "filter": {"expression": f"k8s.namespace.name = '{ns}' AND {_workload_match(wl)}"},
+            "filter": {"expression": f"k8s.namespace.name = '{ns}' AND {match}"},
             "selectFields": [
                 _field("name", "span"), _field("duration_nano", "span"),
                 _field("status_code", "span"), _field("status_message", "span"),
