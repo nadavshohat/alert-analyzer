@@ -24,7 +24,7 @@ def _block_to_messages(block: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "type": "tool_result",
             "tool_use_id": tr["toolUseId"],
-            "content": [{"type": "text", "text": c["text"]} for c in tr.get("content", []) if c.get("text")],
+            "content": [{"type": "text", "text": c["text"]} for c in tr.get("content", []) if (c.get("text") or "").strip()],
             "is_error": tr.get("status") == "error",
         }
     raise ValueError(f"unsupported Converse content block: {sorted(block)}")

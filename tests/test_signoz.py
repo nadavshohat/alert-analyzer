@@ -143,6 +143,7 @@ def test_logs_sorted_and_level_fallback():
     logs = _src(sess).get_logs_for_workload("shop", "api")
     expr = sess.calls[0]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
     assert "k8s.deployment.name = 'api'" in expr and "LIKE" not in expr  # api must not match api-gateway
+    assert "k8s.cronjob.name = 'api'" in expr  # CronJob pods (api-<schedule>-<id>) keep their logs
     assert [l.body for l in logs] == ["first", "later ERROR boom"]
     assert [l.level for l in logs] == ["warn", "error"]
 
@@ -186,8 +187,10 @@ def test_traces_parse_duration_and_skip_untimed():
                                    "status_message": "boom"}},
         {"data": {"name": "no ts"}},
     ]
-    t = _src(FakeSession(_raw(rows))).get_slow_traces("shop", "api")
+    sess = FakeSession(_raw(rows))
+    t = _src(sess).get_slow_traces("shop", "api")
     assert len(t) == 1 and t[0].duration_seconds == 2.5 and t[0].span_name == "GET /"
+    assert "k8s.statefulset.name = 'api'" in sess.calls[0]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
 
 
 def test_factory_selects_signoz_for_every_signal(monkeypatch):

@@ -114,7 +114,7 @@ The service account behind it needs `roles/aiplatform.user`.
 
 - **Single replica, no leader election.** Two replicas would analyse the same event twice and post duplicate alerts.
 - **Two model providers.** Amazon Bedrock (Converse API) and Claude on Vertex AI. Vertex goes through a small Converse-shaped adapter in `src/vertex.py`.
-- **SigNoz traces are matched on `k8s.deployment.name`.** Spans carry it only when the OpenTelemetry k8sattributes processor adds it; without it the traces tool finds nothing for the workload.
+- **SigNoz logs and traces are matched on the workload's controller name** (`k8s.deployment.name`, `k8s.statefulset.name`, `k8s.daemonset.name`, `k8s.cronjob.name`). Records carry these only when the OpenTelemetry k8sattributes processor adds them; without them the tools find nothing for the workload.
 - **Traces need ClickHouse or SigNoz.** On any other backend the traces tool reports itself unavailable rather than returning an empty result that reads like evidence of nothing being wrong.
 - **The Kubernetes-native event source sees a short window.** Core Kubernetes events are retained about an hour, so a long outage of the analyzer loses the events it was down for. ClickHouse retains far longer.
 - **metrics-server has no history.** With `METRIC_SOURCE=kubernetes` the memory reading is a single current sample, which is materially weaker than a trend when judging an OOM.

@@ -32,6 +32,12 @@ def _field(name: str, context: str) -> Dict[str, str]:
     return {"name": name, "fieldContext": context}
 
 
+def _workload_match(wl: str) -> str:
+    """Filter matching a workload by its controller name (wl is pre-validated)."""
+    keys = ("k8s.deployment.name", "k8s.statefulset.name", "k8s.daemonset.name", "k8s.cronjob.name")
+    return "(" + " OR ".join(f"{k} = '{wl}'" for k in keys) + ")"
+
+
 def _parse_ts(value: Any) -> Optional[datetime]:
     if not value:
         return None
@@ -154,8 +160,7 @@ class SignozSource:
     def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
         ns = validate_k8s_name(namespace, "namespace")
         wl = validate_k8s_name(workload, "workload")
-        return self._logs(f"k8s.namespace.name = '{ns}' AND (k8s.deployment.name = '{wl}' OR "
-                          f"k8s.statefulset.name = '{wl}' OR k8s.daemonset.name = '{wl}')", minutes)
+        return self._logs(f"k8s.namespace.name = '{ns}' AND {_workload_match(wl)}", minutes)
 
     # ---- metrics ----
 
@@ -199,7 +204,7 @@ class SignozSource:
         wl = validate_k8s_name(workload, "workload")
         result = self._query("raw", {
             "signal": "traces",
-            "filter": {"expression": f"k8s.namespace.name = '{ns}' AND k8s.deployment.name = '{wl}'"},
+            "filter": {"expression": f"k8s.namespace.name = '{ns}' AND {_workload_match(wl)}"},
             "selectFields": [
                 _field("name", "span"), _field("duration_nano", "span"),
                 _field("status_code", "span"), _field("status_message", "span"),
