@@ -11,6 +11,16 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  {{- if eq .Values.sources.event "kubernetes" }}
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  {{- end }}
+  {{- if eq .Values.sources.metric "kubernetes" }}
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get"]
+  {{- end }}
   {{- if .Values.rbac.allowExec }}
   - apiGroups: [""]
     resources: ["pods/exec"]
