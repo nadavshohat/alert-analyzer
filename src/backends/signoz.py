@@ -78,8 +78,12 @@ class SignozSource:
         reason_list = ", ".join(f"'{r}'" for r in reasons)
         result = self._query("raw", {
             "signal": "logs",
+            # signoz.component narrows to records from the k8s-infra event
+            # collector. Any OTLP sender can still set these attributes, so
+            # EVENT_SOURCE=kubernetes is the trusted choice where it fits.
             "filter": {"expression": f"k8s.event.reason IN ({reason_list}) AND "
-                                     f"severity_text = 'Warning' AND k8s.object.kind = 'Pod'"},
+                                     f"severity_text = 'Warning' AND k8s.object.kind = 'Pod' AND "
+                                     f"signoz.component = 'otel-deployment'"},
             "selectFields": [
                 _field("body", "log"),
                 _field("k8s.event.reason", "attribute"),

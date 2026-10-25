@@ -62,6 +62,7 @@ def test_events_request_shape_and_parse(monkeypatch):
     spec = call["json"]["compositeQuery"]["queries"][0]["spec"]
     assert call["json"]["requestType"] == "raw" and spec["signal"] == "logs"
     assert "k8s.event.reason IN ('BackOff', 'Unhealthy')" in spec["filter"]["expression"]
+    assert "signoz.component = 'otel-deployment'" in spec["filter"]["expression"]
     assert len(events) == 1
     e = events[0]
     assert (e.namespace, e.pod_name, e.workload, e.reason) == ("shop", "api-7d9f8c6b5c-x2k9p", "api", "BackOff")

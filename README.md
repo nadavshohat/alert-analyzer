@@ -66,7 +66,7 @@ The classifier and the tool-less verdict step are the two decisions that matter.
 | Metrics | yes, with history | current only | - | yes, with history | yes, with history |
 | Traces | yes | - | - | - | yes |
 
-SigNoz is read through its query API (`/api/v5/query_range`, SigNoz v0.92 or later) with a service-account API key; Viewer is enough. Kubernetes events reach SigNoz through the k8s-infra chart's event receiver.
+SigNoz is read through its query API (`/api/v5/query_range`, SigNoz v0.92 or later) with a service-account API key; Viewer is enough. Kubernetes events reach SigNoz through the k8s-infra chart's event receiver. Any OTLP sender could write a record that looks like one, so prefer `sources.event=kubernetes` (the cluster API) where its one-hour event window is enough.
 
 The Kubernetes-native path needs no telemetry stack at all, so it runs on any cluster.
 
@@ -99,7 +99,7 @@ On GKE, use Claude on Vertex AI with SigNoz as the data source (put `SIGNOZ_API_
 $ helm install alert-analyzer ./chart -n observability \
     --set secrets.existingSecret=alert-analyzer-secrets \
     --set model.provider=vertex --set vertex.model=claude-sonnet-5-5 \
-    --set sources.event=signoz --set sources.log=signoz \
+    --set sources.event=kubernetes --set sources.log=signoz \
     --set sources.metric=signoz --set sources.trace=signoz \
     --set signoz.url=http://signoz.signoz:8080 \
     --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<gsa>@<project>.iam.gserviceaccount.com
