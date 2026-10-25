@@ -21,6 +21,10 @@ from backends.base import parse_level, to_utc, validate_k8s_name, workload_from_
 
 logger = logging.getLogger(__name__)
 
+# k8s event records reach SigNoz after a collector batch; look back past the
+# poll watermark by this much and let the caller's dedup drop repeats.
+_INGEST_LAG = timedelta(minutes=2)
+
 _REASON_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
 
 
@@ -100,7 +104,7 @@ class SignozSource:
             ts = _parse_ts(row.get("timestamp"))
             if ts is None:
                 continue
-            if since_timestamp and ts <= to_utc(since_timestamp):
+            if since_timestamp and ts <= to_utc(since_timestamp) - _INGEST_LAG:
                 continue
             try:
                 ns = validate_k8s_name(str(data.get("k8s.namespace.name") or ""), "namespace")
@@ -150,7 +154,8 @@ class SignozSource:
     def get_logs_for_workload(self, namespace: str, workload: str, minutes: int = 0) -> List[LogEntry]:
         ns = validate_k8s_name(namespace, "namespace")
         wl = validate_k8s_name(workload, "workload")
-        return self._logs(f"k8s.namespace.name = '{ns}' AND k8s.pod.name LIKE '{wl}-%'", minutes)
+        return self._logs(f"k8s.namespace.name = '{ns}' AND (k8s.deployment.name = '{wl}' OR "
+                          f"k8s.statefulset.name = '{wl}' OR k8s.daemonset.name = '{wl}')", minutes)
 
     # ---- metrics ----
 

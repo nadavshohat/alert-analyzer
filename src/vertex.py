@@ -19,10 +19,12 @@ def _block_to_messages(block: Dict[str, Any]) -> Dict[str, Any]:
         return {"type": "tool_use", "id": tu["toolUseId"], "name": tu["name"], "input": tu["input"]}
     if "toolResult" in block:
         tr = block["toolResult"]
+        # The Messages API rejects empty text blocks, so an empty tool output
+        # becomes a result with no content.
         return {
             "type": "tool_result",
             "tool_use_id": tr["toolUseId"],
-            "content": [{"type": "text", "text": c["text"]} for c in tr.get("content", []) if "text" in c],
+            "content": [{"type": "text", "text": c["text"]} for c in tr.get("content", []) if c.get("text")],
             "is_error": tr.get("status") == "error",
         }
     raise ValueError(f"unsupported Converse content block: {sorted(block)}")

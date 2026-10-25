@@ -86,11 +86,14 @@ def test_events_degenerate_rows_skipped(monkeypatch):
     assert events[0].workload == "ok"
 
 
-def test_events_since_filter_accepts_naive_timestamp(monkeypatch):
+def test_events_since_filter_keeps_late_arrivals_and_drops_old(monkeypatch):
     monkeypatch.setattr(config, "event_reasons", ["BackOff"])
     monkeypatch.setattr(config, "exclude_namespaces", [])
-    since = datetime(2026, 10, 24, 21, 37, 56)  # naive, equal to the row
-    assert _src(FakeSession(_raw([_event()]))).get_crash_events(since) == []
+    row_ts = datetime(2026, 10, 24, 21, 37, 56)  # naive on purpose
+    late = row_ts + timedelta(seconds=60)    # watermark moved past it before ingest
+    old = row_ts + timedelta(minutes=5)      # beyond the ingest lag allowance
+    assert len(_src(FakeSession(_raw([_event()]))).get_crash_events(late)) == 1
+    assert _src(FakeSession(_raw([_event()]))).get_crash_events(old) == []
 
 
 def test_events_reason_list_rejects_unsafe_reasons(monkeypatch):
@@ -136,7 +139,10 @@ def test_logs_sorted_and_level_fallback():
         {"timestamp": "2026-10-24T21:00:02Z", "data": {"body": "later ERROR boom", "severity_text": ""}},
         {"timestamp": "2026-10-24T21:00:01Z", "data": {"body": "first", "severity_text": "WARN"}},
     ]
-    logs = _src(FakeSession(_raw(rows))).get_logs_for_workload("shop", "api")
+    sess = FakeSession(_raw(rows))
+    logs = _src(sess).get_logs_for_workload("shop", "api")
+    expr = sess.calls[0]["json"]["compositeQuery"]["queries"][0]["spec"]["filter"]["expression"]
+    assert "k8s.deployment.name = 'api'" in expr and "LIKE" not in expr  # api must not match api-gateway
     assert [l.body for l in logs] == ["first", "later ERROR boom"]
     assert [l.level for l in logs] == ["warn", "error"]
 

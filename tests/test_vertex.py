@@ -44,6 +44,13 @@ def test_request_translation_covers_every_converse_field():
     assert req["tools"][0] == {"name": spec["name"], "description": spec["description"], "input_schema": spec["inputSchema"]["json"]}
 
 
+def test_empty_tool_output_has_no_empty_text_block():
+    req = vertex.to_messages_request([{"role": "user", "content": [
+        {"toolResult": {"toolUseId": "t1", "content": [{"text": ""}], "status": "success"}},
+        {"toolResult": {"toolUseId": "t2", "content": [{"text": "x"}], "status": "success"}}]}])
+    assert [r["content"] for r in req["messages"][0]["content"]] == [[], [{"type": "text", "text": "x"}]]
+
+
 def test_request_without_tools_or_system_has_no_such_keys():
     req = vertex.to_messages_request([{"role": "user", "content": [{"text": "hi"}]}])
     assert "tools" not in req and "system" not in req
