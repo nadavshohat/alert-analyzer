@@ -88,3 +88,15 @@ secrets:
   clickhousePassword: ""
   slackWebhookUrl: ""
   signozApiKey: ""
+
+# Optional External Secrets Operator sync into secrets.existingSecret, so no
+# secret value passes through Helm values or Terraform state. A key rotation
+# reaches the pod on its next restart.
+externalSecret:
+  enabled: false
+  apiVersion: "external-secrets.io/v1"
+  storeName: ""
+  storeKind: "ClusterSecretStore"
+  refreshInterval: "1h"
+  # Secret key -> remote secret name, e.g. SLACK_WEBHOOK_URL: alert-analyzer-slack-webhook-url
+  data: {}
