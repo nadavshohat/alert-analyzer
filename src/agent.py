@@ -216,11 +216,15 @@ class AgentAnalyzer:
     """Agentic crash analyzer using Bedrock Converse API with tool use."""
 
     def __init__(self, tools=None):
-        boto_config = BotoConfig(
-            region_name=config.bedrock_region,
-            retries={'max_attempts': 10, 'mode': 'adaptive'}
-        )
-        self.bedrock = boto3.client('bedrock-runtime', config=boto_config)
+        if config.model_provider == "vertex":
+            from vertex import VertexConverseClient
+            self.bedrock = VertexConverseClient()
+        else:
+            boto_config = BotoConfig(
+                region_name=config.bedrock_region,
+                retries={'max_attempts': 10, 'mode': 'adaptive'}
+            )
+            self.bedrock = boto3.client('bedrock-runtime', config=boto_config)
         self.tools = tools or ToolHandler()
 
     def analyze(self, event) -> Analysis:

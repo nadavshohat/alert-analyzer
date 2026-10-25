@@ -48,8 +48,10 @@ class SlackNotifier:
         now_local = datetime.now(self.tz)
         timestamp_str = now_local.strftime('%H:%M')
 
-        # Build Groundcover deep link
-        gc_link = self._build_groundcover_link(event)
+        # Groundcover deep link, only when the event came from Groundcover's ClickHouse
+        gc_part = ""
+        if config.event_source in ("clickhouse", ""):
+            gc_part = f" | <{self._build_groundcover_link(event)}|View in Groundcover>"
 
         # Get first recommendation only
         recommendation = analysis.recommendations[0] if analysis.recommendations else "Review logs manually"
@@ -73,7 +75,7 @@ class SlackNotifier:
 *Recommended Action*
 {recommendation}
 
-_Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool calls_ | <{gc_link}|View in Groundcover>"""
+_Last seen:_ {timestamp_str} | _Investigation: {analysis.tool_calls_made} tool calls_{gc_part}"""
 
         # Slack section block text has a 3000 char limit
         if len(message_text) > 2900:

@@ -26,7 +26,7 @@ Wrapping an LLM around an alert stream is easy and mostly produces expensive noi
 
 ## Status
 
-Running in production on a client's cluster, triaging live alerts into Slack. Single replica, no leader election, one Bedrock provider. It is a working tool, not a product: see [Limitations](#limitations) before deploying it somewhere that matters.
+Running in production on a client's cluster, triaging live alerts into Slack. Single replica, no leader election. It is a working tool, not a product: see [Limitations](#limitations) before deploying it somewhere that matters.
 
 ## How it works
 
@@ -57,14 +57,16 @@ The classifier and the tool-less verdict step are the two decisions that matter.
 
 **Only deterministic checks may suppress an alert.** The model's own `STATUS: resolved` is carried for display and is never a suppressor. Silence is decided by a pod-health recheck against the live cluster, immediately before sending.
 
-**Telemetry is pluggable per signal.** Events, logs, metrics and traces are selected independently, so the same binary runs against Groundcover ClickHouse, the Kubernetes API, Loki or Prometheus, in any combination.
+**Telemetry is pluggable per signal.** Events, logs, metrics and traces are selected independently, so the same binary runs against Groundcover ClickHouse, the Kubernetes API, Loki, Prometheus or SigNoz, in any combination.
 
-| Signal | ClickHouse | Kubernetes API | Loki | Prometheus |
-| --- | --- | --- | --- | --- |
-| Crash events | yes | yes | - | - |
-| Logs | yes | yes | yes | - |
-| Metrics | yes, with history | current only | - | yes, with history |
-| Traces | yes | - | - | - |
+| Signal | ClickHouse | Kubernetes API | Loki | Prometheus | SigNoz |
+| --- | --- | --- | --- | --- | --- |
+| Crash events | yes | yes | - | - | yes |
+| Logs | yes | yes | yes | - | yes |
+| Metrics | yes, with history | current only | - | yes, with history | yes, with history |
+| Traces | yes | - | - | - | yes |
+
+SigNoz is read through its query API (`/api/v5/query_range`, SigNoz v0.92 or later) with a service-account API key; Viewer is enough. Kubernetes events reach SigNoz through the k8s-infra chart's event receiver.
 
 The Kubernetes-native path needs no telemetry stack at all, so it runs on any cluster.
 
@@ -91,14 +93,28 @@ $ helm install alert-analyzer ./chart -n observability \
 
 The pod needs AWS credentials for Bedrock. On EKS, annotate the service account with an IRSA role.
 
+On GKE, use Claude on Vertex AI with SigNoz as the data source (put `SIGNOZ_API_KEY` in the secret, and enable the Claude model in Model Garden first):
+
+```console
+$ helm install alert-analyzer ./chart -n observability \
+    --set secrets.existingSecret=alert-analyzer-secrets \
+    --set model.provider=vertex --set vertex.model=claude-sonnet-5-5 \
+    --set sources.event=signoz --set sources.log=signoz \
+    --set sources.metric=signoz --set sources.trace=signoz \
+    --set signoz.url=http://signoz.signoz:8080 \
+    --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<gsa>@<project>.iam.gserviceaccount.com
+```
+
+The service account behind it needs `roles/aiplatform.user`.
+
 > [!WARNING]
 > The chart grants `create` on `pods/exec` cluster-wide by default, which the file and env inspection tools use. Set `rbac.allowExec=false` to drop it; the agent then works from logs and metrics only.
 
 ## Limitations
 
 - **Single replica, no leader election.** Two replicas would analyse the same event twice and post duplicate alerts.
-- **Amazon Bedrock only.** No other model provider is wired up.
-- **Traces are ClickHouse-only.** On any other backend the traces tool reports itself unavailable rather than returning an empty result that reads like evidence of nothing being wrong.
+- **Two model providers.** Amazon Bedrock (Converse API) and Claude on Vertex AI. Vertex goes through a small Converse-shaped adapter in `src/vertex.py`.
+- **Traces need ClickHouse or SigNoz.** On any other backend the traces tool reports itself unavailable rather than returning an empty result that reads like evidence of nothing being wrong.
 - **The Kubernetes-native event source sees a short window.** Core Kubernetes events are retained about an hour, so a long outage of the analyzer loses the events it was down for. ClickHouse retains far longer.
 - **metrics-server has no history.** With `METRIC_SOURCE=kubernetes` the memory reading is a single current sample, which is materially weaker than a trend when judging an OOM.
 - **Secret redaction in `get_env` is best-effort**, keyed on variable names. A secret under a benign name still leaks. RBAC is the real boundary, not that filter.
@@ -110,7 +126,8 @@ The pod needs AWS credentials for Bedrock. On EKS, annotate the service account 
 | --- | --- |
 | `src/classifier.py` | The deterministic first pass. Short, and the most consequential file |
 | `src/agent.py` | Bedrock Converse tool-use loop, and the no-tools verdict step |
-| `src/backends/` | Per-signal source protocols and the Kubernetes, Loki and Prometheus implementations |
+| `src/vertex.py` | Claude on Vertex behind the Converse call shape (`MODEL_PROVIDER=vertex`) |
+| `src/backends/` | Per-signal source protocols and the Kubernetes, Loki, Prometheus and SigNoz implementations |
 | `src/clickhouse.py` | Groundcover ClickHouse client and the shared wire types |
 | `src/tools.py` | Tools the agent may call. Pod access is a fixed argv over the exec API, never a shell |
 | `src/main.py` | Polling loop, dedup, grace periods, the health checks that gate every alert |

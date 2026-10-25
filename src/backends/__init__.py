@@ -36,6 +36,12 @@ def _prometheus():
 
 
 @lru_cache(maxsize=None)
+def _signoz():
+    from backends.signoz import SignozSource
+    return SignozSource()
+
+
+@lru_cache(maxsize=None)
 def _null_traces():
     return NullTraceSource()
 
@@ -44,6 +50,8 @@ def build_event_source() -> EventSource:
     src = config.event_source
     if src == "kubernetes":
         return _kubernetes()
+    if src == "signoz":
+        return _signoz()
     if src not in ("clickhouse", ""):
         logger.warning(f"Unknown EVENT_SOURCE {src!r}, using clickhouse")
     return _clickhouse()
@@ -55,6 +63,8 @@ def build_log_source() -> LogSource:
         return _kubernetes()
     if src == "loki":
         return _loki()
+    if src == "signoz":
+        return _signoz()
     if src not in ("clickhouse", ""):
         logger.warning(f"Unknown LOG_SOURCE {src!r}, using clickhouse")
     return _clickhouse()
@@ -66,6 +76,8 @@ def build_metric_source() -> MetricSource:
         return _kubernetes()
     if src == "prometheus":
         return _prometheus()
+    if src == "signoz":
+        return _signoz()
     if src not in ("clickhouse", ""):
         logger.warning(f"Unknown METRIC_SOURCE {src!r}, using clickhouse")
     return _clickhouse()
@@ -75,6 +87,8 @@ def build_trace_source() -> TraceSource:
     src = config.trace_source
     if src in ("none", "null"):
         return _null_traces()
+    if src == "signoz":
+        return _signoz()
     if src not in ("clickhouse", ""):
         logger.warning(f"Unknown TRACE_SOURCE {src!r}, using clickhouse")
     return _clickhouse()

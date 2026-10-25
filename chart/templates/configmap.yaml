@@ -35,3 +35,16 @@ data:
   {{- if .Values.prometheus.url }}
   PROMETHEUS_URL: {{ .Values.prometheus.url | quote }}
   {{- end }}
+  {{- if .Values.signoz.url }}
+  SIGNOZ_URL: {{ .Values.signoz.url | quote }}
+  {{- end }}
+  {{- if ne .Values.model.provider "bedrock" }}
+  MODEL_PROVIDER: {{ .Values.model.provider | quote }}
+  VERTEX_REGION: {{ .Values.vertex.region | quote }}
+  {{- end }}
+  {{- if .Values.vertex.projectId }}
+  VERTEX_PROJECT_ID: {{ .Values.vertex.projectId | quote }}
+  {{- end }}
+  {{- if .Values.vertex.model }}
+  VERTEX_MODEL: {{ .Values.vertex.model | quote }}
+  {{- end }}
